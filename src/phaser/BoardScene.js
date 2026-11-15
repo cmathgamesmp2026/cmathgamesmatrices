@@ -28,8 +28,17 @@ export default class BoardScene extends Phaser.Scene {
 
   setupEventListeners() {
     // Reset / Start Game
-    events.on(EVENTS.START_GAME, () => {
+    events.on(EVENTS.START_GAME, ({ selectedToken } = {}) => {
+      if (selectedToken) {
+        this.token.setTokenType(selectedToken);
+      }
       this.token.teleportTo(1);
+    });
+
+    events.on(EVENTS.TOKEN_CHANGED, ({ token } = {}) => {
+      if (token) {
+        this.token.setTokenType(token);
+      }
     });
 
     events.on(EVENTS.RESTART_GAME, () => {

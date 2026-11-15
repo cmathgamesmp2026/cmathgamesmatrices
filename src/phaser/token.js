@@ -1,60 +1,133 @@
 /**
  * Player Token for Phaser
- * Handles token rendering, hopping animations along tiles, and ladder/snake traversal.
+ * Handles token rendering with 6 selectable themes (Car, Chess, Rocket, Crown, Gem, Lightning),
+ * hopping animations along tiles, and ladder/snake traversal.
  */
 
+export const TOKEN_DEFINITIONS = {
+  car: {
+    name: 'Race Car',
+    icon: '🏎️',
+    outerColor: 0x991b1b,
+    innerColor: 0xdc2626,
+    glowColor: 0xf87171,
+    ringColor: 0xffffff
+  },
+  chess: {
+    name: 'Chess Knight',
+    icon: '♟️',
+    outerColor: 0x0f172a,
+    innerColor: 0x334155,
+    glowColor: 0xf59e0b,
+    ringColor: 0xfbbf24
+  },
+  rocket: {
+    name: 'Rocket',
+    icon: '🚀',
+    outerColor: 0x4338ca,
+    innerColor: 0x6366f1,
+    glowColor: 0x38bdf8,
+    ringColor: 0x38bdf8
+  },
+  crown: {
+    name: 'Royal Crown',
+    icon: '👑',
+    outerColor: 0xb45309,
+    innerColor: 0xf59e0b,
+    glowColor: 0xfde047,
+    ringColor: 0xfffbeb
+  },
+  gem: {
+    name: 'Diamond Gem',
+    icon: '💎',
+    outerColor: 0x047857,
+    innerColor: 0x10b981,
+    glowColor: 0x6ee7b7,
+    ringColor: 0xa7f3d0
+  },
+  lightning: {
+    name: 'Lightning',
+    icon: '⚡',
+    outerColor: 0x1e3a8a,
+    innerColor: 0x2563eb,
+    glowColor: 0xfacc15,
+    ringColor: 0xfef08a
+  }
+};
+
 export class PlayerToken {
-  constructor(scene, boardDrawer) {
+  constructor(scene, boardDrawer, initialTokenType = 'car') {
     this.scene = scene;
     this.boardDrawer = boardDrawer;
+    this.tokenType = initialTokenType;
     this.container = scene.add.container(0, 0);
 
     this.shadow = scene.add.graphics();
-    this.tokenBody = scene.add.graphics();
     this.glowRing = scene.add.graphics();
+    this.tokenBody = scene.add.graphics();
 
-    this.container.add([this.shadow, this.glowRing, this.tokenBody]);
+    this.iconText = scene.add.text(0, -1, '🏎️', {
+      fontFamily: 'Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, system-ui, sans-serif',
+      fontSize: '20px',
+      align: 'center'
+    });
+    this.iconText.setOrigin(0.5, 0.5);
+    this.iconText.setResolution(2);
+
+    this.container.add([this.shadow, this.glowRing, this.tokenBody, this.iconText]);
 
     this.currentTile = 1;
-    this.radius = 18;
+    this.radius = 20;
     this.drawToken();
 
     // Set initial position
     this.teleportTo(1);
   }
 
+  setTokenType(tokenType) {
+    if (TOKEN_DEFINITIONS[tokenType]) {
+      this.tokenType = tokenType;
+      this.drawToken();
+    }
+  }
+
   drawToken() {
+    const def = TOKEN_DEFINITIONS[this.tokenType] || TOKEN_DEFINITIONS.car;
+
     // Shadow
     this.shadow.clear();
-    this.shadow.fillStyle(0x000000, 0.25);
-    this.shadow.fillEllipse(0, 10, this.radius * 2, this.radius);
+    this.shadow.fillStyle(0x000000, 0.3);
+    this.shadow.fillEllipse(0, 11, this.radius * 2.1, this.radius * 1.1);
 
     // Glow ring
     this.glowRing.clear();
-    this.glowRing.lineStyle(3, 0x60a5fa, 0.6);
+    this.glowRing.lineStyle(3.5, def.glowColor, 0.7);
     this.glowRing.strokeCircle(0, 0, this.radius + 3);
 
-    // Main token body: Sapphire Blue gradient-feel with glossy rim
+    // Main token body: Themed base disc
     this.tokenBody.clear();
-    this.tokenBody.fillStyle(0x1d4ed8, 1); // outer rich blue
+    this.tokenBody.fillStyle(def.outerColor, 1);
     this.tokenBody.fillCircle(0, 0, this.radius);
 
-    this.tokenBody.fillStyle(0x3b82f6, 1); // lighter inner core
-    this.tokenBody.fillCircle(0, 0, this.radius - 3);
+    this.tokenBody.fillStyle(def.innerColor, 1);
+    this.tokenBody.fillCircle(0, 0, this.radius - 2.5);
 
-    // White concentric badge ring & star / pawn accent
-    this.tokenBody.lineStyle(2, 0xffffff, 0.9);
-    this.tokenBody.strokeCircle(0, 0, this.radius - 7);
+    // White / Accent concentric border ring
+    this.tokenBody.lineStyle(1.5, def.ringColor, 0.9);
+    this.tokenBody.strokeCircle(0, 0, this.radius - 3.5);
 
-    this.tokenBody.fillStyle(0xffffff, 1);
-    this.tokenBody.fillCircle(0, 0, 4);
+    // Update central emoji icon
+    this.iconText.setText(def.icon);
 
-    // Subtle idle floating / pulsing tween
-    this.scene.tweens.add({
+    // Idle pulse tween
+    if (this.idleTween) {
+      this.idleTween.stop();
+    }
+    this.idleTween = this.scene.tweens.add({
       targets: this.glowRing,
-      alpha: { from: 0.3, to: 0.9 },
-      scale: { from: 0.95, to: 1.1 },
-      duration: 1200,
+      alpha: { from: 0.3, to: 0.95 },
+      scale: { from: 0.95, to: 1.12 },
+      duration: 1100,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.easeInOut'
@@ -103,10 +176,6 @@ export class PlayerToken {
       const targetCoords = this.boardDrawer.getTileCenter(targetTile);
 
       // Hop tween: moves to target x, y with an arc in y and slight scale bounce
-      const startX = this.container.x;
-      const startY = this.container.y;
-      const hopHeight = 16;
-
       this.scene.tweens.add({
         targets: this.container,
         scaleX: 1.25,
@@ -211,6 +280,7 @@ export class PlayerToken {
   }
 
   destroy() {
+    if (this.idleTween) this.idleTween.stop();
     this.container.destroy();
   }
 }

@@ -1,7 +1,7 @@
 /**
  * HTML UI Controller
- * Manages Start Screen, HUD Stats, Question Card, Matrices Rendering,
- * Results Screen, and Leaderboard.
+ * Manages Start Screen, Token Selection, In-game Difficulty Switching, HUD Stats,
+ * Question Card, Matrices Rendering, Results Screen, and Leaderboard.
  */
 
 import { events, EVENTS } from '../game/events.js';
@@ -9,6 +9,15 @@ import { gameState } from '../game/gameState.js';
 import { rollDice } from '../game/diceLogic.js';
 import { resolveTurnMovement } from '../game/boardLogic.js';
 import { renderOptionContent, renderMatricesSection } from './matrixRenderer.js';
+
+export const TOKEN_ICONS = {
+  car: '🏎️',
+  chess: '♟️',
+  rocket: '🚀',
+  crown: '👑',
+  gem: '💎',
+  lightning: '⚡'
+};
 
 export class HTMLUI {
   constructor() {
@@ -21,14 +30,16 @@ export class HTMLUI {
 
       // Start screen inputs
       nameInput: document.getElementById('player-name-input'),
-      difficultySelect: document.getElementById('difficulty-select'),
+      tokenButtons: document.querySelectorAll('.token-btn'),
       startGameBtn: document.getElementById('start-game-btn'),
       viewLeaderboardBtn: document.getElementById('view-leaderboard-btn'),
       nameError: document.getElementById('name-error'),
 
       // HUD elements
       hudPlayerName: document.getElementById('hud-player-name'),
-      hudDifficulty: document.getElementById('hud-difficulty'),
+      hudTokenIcon: document.getElementById('hud-token-icon'),
+      diffBtnEasy: document.getElementById('diff-btn-easy'),
+      diffBtnHard: document.getElementById('diff-btn-hard'),
       hudCurrentTile: document.getElementById('hud-current-tile'),
       hudProgressBar: document.getElementById('hud-progress-bar'),
       hudTurnCount: document.getElementById('hud-turn-count'),
@@ -39,6 +50,7 @@ export class HTMLUI {
       // Question card
       questionContainer: document.getElementById('question-container'),
       questionTopic: document.getElementById('question-topic'),
+      questionDiffBadge: document.getElementById('question-diff-badge'),
       questionText: document.getElementById('question-text'),
       questionMatrices: document.getElementById('question-matrices'),
       optionsGrid: document.getElementById('options-grid'),
@@ -67,6 +79,7 @@ export class HTMLUI {
       leaderboardBody: document.getElementById('leaderboard-body')
     };
 
+    this.selectedToken = 'car';
     this.currentQuestion = null;
     this.prefetchedQuestion = null;
     this.isFetchingQuestion = false;
@@ -76,6 +89,24 @@ export class HTMLUI {
   }
 
   initEventListeners() {
+    // Token selection buttons
+    this.elements.tokenButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.elements.tokenButtons.forEach((b) => b.classList.remove('selected'));
+        btn.classList.add('selected');
+        this.selectedToken = btn.dataset.token || 'car';
+        gameState.setToken(this.selectedToken);
+      });
+    });
+
+    // In-game difficulty toggle buttons
+    if (this.elements.diffBtnEasy) {
+      this.elements.diffBtnEasy.addEventListener('click', () => this.handleDifficultyChange('Easy'));
+    }
+    if (this.elements.diffBtnHard) {
+      this.elements.diffBtnHard.addEventListener('click', () => this.handleDifficultyChange('Hard'));
+    }
+
     // Start game button
     this.elements.startGameBtn.addEventListener('click', () => this.handleStartGame());
     this.elements.nameInput.addEventListener('keydown', (e) => {
@@ -110,6 +141,20 @@ export class HTMLUI {
     });
   }
 
+  handleDifficultyChange(newDifficulty) {
+    if (gameState.isAnswering || gameState.isRollingOrMoving) return;
+    if (gameState.difficulty === newDifficulty) return;
+
+    gameState.setDifficulty(newDifficulty);
+
+    // Invalidate stale prefetch for the previous difficulty
+    this.prefetchedQuestion = null;
+
+    // Reload question for current turn under the new difficulty
+    this.elements.actionBanner.textContent = `Switched to ${newDifficulty} mode (${newDifficulty === 'Hard' ? '2 Dice' : '1 Die'})! Loading question...`;
+    this.loadTurnQuestion();
+  }
+
   handleStartGame() {
     const rawName = this.elements.nameInput.value.trim();
     if (!rawName) {
@@ -120,15 +165,18 @@ export class HTMLUI {
     }
 
     this.elements.nameError.classList.add('hidden');
-    const difficulty = this.elements.difficultySelect.value;
-    gameState.init(rawName, difficulty);
+    gameState.init(rawName, this.selectedToken, gameState.difficulty);
 
     // Switch screen
     this.elements.startScreen.classList.add('hidden');
     this.elements.victoryModal.classList.add('hidden');
     this.elements.gameScreen.classList.remove('hidden');
 
-    events.emit(EVENTS.START_GAME, { playerName: gameState.playerName, difficulty });
+    events.emit(EVENTS.START_GAME, {
+      playerName: gameState.playerName,
+      selectedToken: this.selectedToken,
+      difficulty: gameState.difficulty
+    });
 
     // Fetch first question
     this.loadTurnQuestion();
@@ -136,8 +184,27 @@ export class HTMLUI {
 
   updateHUD(stats) {
     this.elements.hudPlayerName.textContent = stats.name;
-    this.elements.hudDifficulty.textContent = stats.difficulty;
-    this.elements.hudDifficulty.className = `difficulty-badge ${stats.difficulty.toLowerCase()}`;
+    if (this.elements.hudTokenIcon) {
+      this.elements.hudTokenIcon.textContent = TOKEN_ICONS[stats.selectedToken] || '🏎️';
+    }
+
+    // Update in-game difficulty toggle buttons
+    const isHard = stats.difficulty === 'Hard';
+    if (this.elements.diffBtnEasy) {
+      this.elements.diffBtnEasy.classList.toggle('active', !isHard);
+      this.elements.diffBtnEasy.disabled = gameState.isAnswering || gameState.isRollingOrMoving;
+    }
+    if (this.elements.diffBtnHard) {
+      this.elements.diffBtnHard.classList.toggle('active', isHard);
+      this.elements.diffBtnHard.disabled = gameState.isAnswering || gameState.isRollingOrMoving;
+    }
+
+    // Update question card difficulty badge
+    if (this.elements.questionDiffBadge) {
+      this.elements.questionDiffBadge.textContent = isHard ? 'Hard • 2 Dice' : 'Easy • 1 Die';
+      this.elements.questionDiffBadge.className = `difficulty-badge ${isHard ? 'hard' : 'easy'}`;
+    }
+
     this.elements.hudCurrentTile.textContent = `Tile ${stats.currentTile} / 100`;
     this.elements.hudProgressBar.style.width = `${stats.currentTile}%`;
     this.elements.hudTurnCount.textContent = `Turn ${stats.turnsTaken + 1}`;
@@ -197,7 +264,9 @@ export class HTMLUI {
     this.elements.questionError.classList.add('hidden');
     this.elements.questionLoading.classList.remove('hidden');
     this.elements.feedbackSection.classList.add('hidden');
-    this.elements.actionBanner.textContent = 'Answer the question to roll the dice!';
+
+    const isHard = gameState.difficulty === 'Hard';
+    this.elements.actionBanner.textContent = `Answer the question to roll ${isHard ? '2 dice' : '1 die'}!`;
     this.elements.actionBanner.className = 'action-banner';
 
     try {
@@ -233,8 +302,13 @@ export class HTMLUI {
     this.elements.questionError.classList.add('hidden');
     this.elements.questionContainer.classList.remove('hidden');
 
-    // Topic tag & Question Statement
+    // Topic tag, Difficulty badge & Question Statement
     this.elements.questionTopic.textContent = q.topic;
+    if (this.elements.questionDiffBadge) {
+      const isHard = gameState.difficulty === 'Hard';
+      this.elements.questionDiffBadge.textContent = isHard ? 'Hard • 2 Dice' : 'Easy • 1 Die';
+      this.elements.questionDiffBadge.className = `difficulty-badge ${isHard ? 'hard' : 'easy'}`;
+    }
     this.elements.questionText.textContent = q.question;
 
     // Render Matrix data if provided (e.g. A = [...], B = [...])
@@ -268,6 +342,9 @@ export class HTMLUI {
     if (gameState.isAnswering || gameState.isRollingOrMoving) return;
     gameState.isAnswering = true;
     gameState.isRollingOrMoving = true;
+
+    // Update difficulty controls disabled state
+    this.updateHUD(gameState.getSummary());
 
     const q = this.currentQuestion;
     const isCorrect = selectedIndex === q.correctIndex;
@@ -377,6 +454,7 @@ export class HTMLUI {
     } else {
       // Prepare for next turn
       gameState.isRollingOrMoving = false;
+      this.updateHUD(gameState.getSummary());
       setTimeout(() => {
         this.loadTurnQuestion();
       }, 1400);

@@ -125,6 +125,128 @@ select:focus {
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
 }
 
+/* TOKEN SELECTION GRID */
+.token-selection-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.token-btn {
+  background: #0f172a;
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 10px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  color: var(--text-main);
+  outline: none;
+}
+
+.token-btn:hover {
+  background: #1e293b;
+  border-color: #60a5fa;
+  transform: translateY(-2px);
+}
+
+.token-btn.selected {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: #3b82f6;
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);
+  transform: translateY(-2px);
+}
+
+.token-glyph {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.token-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.token-btn.selected .token-title {
+  color: #60a5fa;
+}
+
+/* PLAYER TOKEN BADGE IN HUD */
+.player-token-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud-token-glyph {
+  font-size: 18px;
+  line-height: 1;
+}
+
+/* IN-GAME DIFFICULTY CONTROL */
+.difficulty-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.difficulty-toggle {
+  display: inline-flex;
+  background: #0f172a;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  gap: 4px;
+}
+
+.diff-toggle-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.diff-toggle-btn:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.diff-toggle-btn.active[data-difficulty="Easy"] {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.diff-toggle-btn.active[data-difficulty="Hard"] {
+  background: rgba(244, 63, 94, 0.25);
+  color: #fb7185;
+  border-color: rgba(244, 63, 94, 0.4);
+}
+
+.diff-toggle-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.header-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .rules-summary {
   background: rgba(15, 23, 42, 0.6);
   border-radius: var(--radius-sm);
@@ -929,6 +1051,19 @@ select:focus {
 @media (max-width: 640px) {
   .game-hud {
     padding: 8px 12px;
+  }
+
+  .token-selection-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .difficulty-toggle {
+    width: 100%;
+  }
+
+  .diff-toggle-btn {
+    flex: 1;
+    text-align: center;
   }
 
   .options-grid {

@@ -7,6 +7,7 @@ class GameState {
 
   reset() {
     this.playerName = '';
+    this.selectedToken = 'car';
     this.difficulty = 'Easy';
     this.currentTile = 1;
     this.turnsTaken = 0;
@@ -24,11 +25,27 @@ class GameState {
     this.isGameOver = false;
   }
 
-  init(name, difficulty = 'Easy') {
+  init(name, selectedToken = 'car', difficulty = 'Easy') {
     this.reset();
     this.playerName = (name || 'Player').trim().slice(0, 100);
+    this.selectedToken = selectedToken || 'car';
     this.difficulty = difficulty === 'Hard' ? 'Hard' : 'Easy';
     this.notifyUpdate();
+  }
+
+  setDifficulty(diff) {
+    const newDiff = diff === 'Hard' ? 'Hard' : 'Easy';
+    if (this.difficulty !== newDiff) {
+      this.difficulty = newDiff;
+      this.notifyUpdate();
+      events.emit(EVENTS.DIFFICULTY_CHANGED, { difficulty: this.difficulty });
+    }
+  }
+
+  setToken(token) {
+    this.selectedToken = token || 'car';
+    this.notifyUpdate();
+    events.emit(EVENTS.TOKEN_CHANGED, { token: this.selectedToken });
   }
 
   startTimer() {
@@ -86,6 +103,7 @@ class GameState {
   getSummary() {
     return {
       name: this.playerName,
+      selectedToken: this.selectedToken,
       difficulty: this.difficulty,
       currentTile: this.currentTile,
       turnsTaken: this.turnsTaken,

@@ -34,11 +34,33 @@
         </div>
 
         <div class="form-group">
-          <label for="difficulty-select">Select Difficulty</label>
-          <select id="difficulty-select">
-            <option value="Easy">Easy (1 Die • Topics 1–6, 2×2 Det &amp; Inverse)</option>
-            <option value="Hard">Hard (2 Dice • 3×3 Det &amp; Inverse, Systems AX=b)</option>
-          </select>
+          <label>Choose Your Token</label>
+          <div class="token-selection-grid" id="token-selection-grid">
+            <button type="button" class="token-btn selected" data-token="car" title="Race Car">
+              <span class="token-glyph">🏎️</span>
+              <span class="token-title">Car</span>
+            </button>
+            <button type="button" class="token-btn" data-token="chess" title="Chess Knight">
+              <span class="token-glyph">♟️</span>
+              <span class="token-title">Chess</span>
+            </button>
+            <button type="button" class="token-btn" data-token="rocket" title="Rocket Ship">
+              <span class="token-glyph">🚀</span>
+              <span class="token-title">Rocket</span>
+            </button>
+            <button type="button" class="token-btn" data-token="crown" title="Royal Crown">
+              <span class="token-glyph">👑</span>
+              <span class="token-title">Crown</span>
+            </button>
+            <button type="button" class="token-btn" data-token="gem" title="Diamond Gem">
+              <span class="token-glyph">💎</span>
+              <span class="token-title">Gem</span>
+            </button>
+            <button type="button" class="token-btn" data-token="lightning" title="Lightning Bolt">
+              <span class="token-glyph">⚡</span>
+              <span class="token-title">Bolt</span>
+            </button>
+          </div>
         </div>
 
         <div class="rules-summary">
@@ -65,8 +87,22 @@
       <header class="game-hud">
         <div class="hud-item player-info">
           <span class="hud-label">Player</span>
-          <span id="hud-player-name" class="hud-val">Player</span>
-          <span id="hud-difficulty" class="difficulty-badge easy">Easy</span>
+          <div class="player-token-badge">
+            <span id="hud-token-icon" class="hud-token-glyph">🏎️</span>
+            <span id="hud-player-name" class="hud-val">Player</span>
+          </div>
+        </div>
+
+        <div class="hud-item difficulty-control">
+          <span class="hud-label">Difficulty (Change Anytime)</span>
+          <div class="difficulty-toggle" id="difficulty-toggle">
+            <button type="button" id="diff-btn-easy" class="diff-toggle-btn active" data-difficulty="Easy" title="Easy: 1 Die • Topics 1–6, 2×2 Det & Inverse">
+              Easy (1 Die)
+            </button>
+            <button type="button" id="diff-btn-hard" class="diff-toggle-btn" data-difficulty="Hard" title="Hard: 2 Dice • 3×3 Det & Inverse, Systems AX=b">
+              Hard (2 Dice)
+            </button>
+          </div>
         </div>
 
         <div class="hud-item tile-info">
@@ -130,7 +166,10 @@
           <div id="question-container" class="card question-card">
             <div class="question-header">
               <span id="question-topic" class="topic-tag">Topic</span>
-              <span class="question-badge">Multiple Choice</span>
+              <div class="header-badges">
+                <span id="question-diff-badge" class="difficulty-badge easy">Easy • 1 Die</span>
+                <span class="question-badge">Multiple Choice</span>
+              </div>
             </div>
 
             <div id="question-text" class="question-text">
