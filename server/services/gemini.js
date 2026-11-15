@@ -1,6 +1,18 @@
 import { GoogleGenAI } from '@google/genai';
 import { verifyQuestion, SYLLABUS_TOPICS, compareValues } from './mathVerify.js';
 
+export const SUPPORTED_GEMINI_MODELS = [
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-4-argon'
+];
+
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash';
+
 const SYSTEM_PROMPT = `You are a university mathematics professor creating exam-quality Computing Mathematics questions for a "Matrices" topic.
 All questions MUST strictly adhere to the course syllabus.
 
@@ -80,13 +92,20 @@ export async function generateQuestion({ difficulty = 'Easy', previousTopic = nu
     throw new Error('GEMINI_API_KEY is not configured in .env. Please set your Gemini API key.');
   }
 
-  const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const preferredModel = (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim();
   const ai = new GoogleGenAI({ apiKey });
+
+  // Priority order: user-specified model first, followed by reliable fallbacks
+  const modelsToTry = [
+    preferredModel,
+    ...SUPPORTED_GEMINI_MODELS.filter((m) => m !== preferredModel)
+  ];
 
   const maxAttempts = 3;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const currentModel = modelsToTry[(attempt - 1) % modelsToTry.length];
     try {
       const difficultyPrompt =
         difficulty === 'Easy'
@@ -117,7 +136,7 @@ Ensure that all arithmetic and matrix values in "matrices" and "options" are 100
 Respond with pure JSON only matching the schema.`;
 
       const response = await ai.models.generateContent({
-        model: modelName,
+        model: currentModel,
         contents: userPrompt,
         config: {
           systemInstruction: SYSTEM_PROMPT,

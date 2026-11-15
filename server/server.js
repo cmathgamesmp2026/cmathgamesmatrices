@@ -10,6 +10,7 @@ dotenv.config();
 
 import questionRoutes from './routes/questions.js';
 import leaderboardRoutes from './routes/leaderboard.js';
+import { DEFAULT_GEMINI_MODEL, SUPPORTED_GEMINI_MODELS } from './services/gemini.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,7 +30,8 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your_gemini_api_key_here'),
-    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    model: process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
+    supportedModels: SUPPORTED_GEMINI_MODELS,
     dbHost: process.env.DB_HOST || 'localhost'
   });
 });
@@ -49,5 +51,5 @@ if (fs.existsSync(distPath)) {
 
 app.listen(PORT, () => {
   console.log(`[Server] Express server running at http://localhost:${PORT}`);
-  console.log(`[Server] Gemini Model configured: ${process.env.GEMINI_MODEL || 'gemini-2.5-flash'}`);
+  console.log(`[Server] Gemini Model configured: ${process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL}`);
 });

@@ -120,7 +120,16 @@ Edit `.env` and fill in your Gemini API key and MySQL credentials:
 ```ini
 # Gemini API Settings (Backend only - NEVER prefix with VITE_)
 GEMINI_API_KEY=your_actual_gemini_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
+
+# Configurable Gemini Models:
+# - gemini-3.5-flash (recommended fast & stable default)
+# - gemini-3.5-flash-lite
+# - gemini-3.8-flash
+# - gemini-3.7-flash
+# - gemini-3.6-flash
+# - gemini-3.1-flash-lite
+# - gemini-4-argon
+GEMINI_MODEL=gemini-3.5-flash
 
 # Backend Server Port
 PORT=3000
