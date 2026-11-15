@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Matrices Snakes &amp; Ladders - Computing Mathematics</title>
+  <link rel="stylesheet" href="./src/styles/main.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="app">
+    <!-- START SCREEN -->
+    <div id="start-screen" class="screen-overlay">
+      <div class="start-card">
+        <div class="game-logo">
+          <span class="logo-icon">🎲</span>
+          <h1>Matrices Snakes &amp; Ladders</h1>
+          <p class="subtitle">Computing Mathematics (CMATHS Topic 2: Matrices)</p>
+        </div>
+
+        <div class="form-group">
+          <label for="player-name-input">Player Name</label>
+          <input
+            type="text"
+            id="player-name-input"
+            placeholder="Enter your name..."
+            maxlength="100"
+            autocomplete="off"
+            autofocus
+          />
+          <div id="name-error" class="error-msg hidden"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="difficulty-select">Select Difficulty</label>
+          <select id="difficulty-select">
+            <option value="Easy">Easy (1 Die • Topics 1–6, 2×2 Det &amp; Inverse)</option>
+            <option value="Hard">Hard (2 Dice • 3×3 Det &amp; Inverse, Systems AX=b)</option>
+          </select>
+        </div>
+
+        <div class="rules-summary">
+          <h3>🎮 Game Rules &amp; Dice Mechanics:</h3>
+          <ul>
+            <li><strong>AI Questions:</strong> Every question is dynamically generated live with Gemini API.</li>
+            <li><strong>Biased Dice:</strong> Correct answers give a <strong>70% chance</strong> for high rolls (4, 5, 6). Wrong answers give <strong>70% chance</strong> for low rolls (1, 2, 3).</li>
+            <li><strong>Hard Mode:</strong> Rolls <strong>2 dice</strong> (move is sum of both).</li>
+            <li><strong>Snakes &amp; Ladders:</strong> Ladders propel you up; snakes slide you down.</li>
+            <li><strong>Bounce-Back Rule:</strong> You must land <em>exactly</em> on tile 100. Any overshoot bounces back!</li>
+          </ul>
+        </div>
+
+        <div class="start-actions">
+          <button id="start-game-btn" class="btn btn-primary btn-large">Start Game</button>
+          <button id="view-leaderboard-btn" class="btn btn-secondary">🏆 Top 10 Leaderboard</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MAIN GAME SCREEN -->
+    <div id="game-screen" class="game-container hidden">
+      <!-- Top HUD Stats Bar -->
+      <header class="game-hud">
+        <div class="hud-item player-info">
+          <span class="hud-label">Player</span>
+          <span id="hud-player-name" class="hud-val">Player</span>
+          <span id="hud-difficulty" class="difficulty-badge easy">Easy</span>
+        </div>
+
+        <div class="hud-item tile-info">
+          <div class="tile-header">
+            <span class="hud-label">Position</span>
+            <span id="hud-current-tile" class="hud-val">Tile 1 / 100</span>
+          </div>
+          <div class="progress-bar-container">
+            <div id="hud-progress-bar" class="progress-bar-fill" style="width: 1%;"></div>
+          </div>
+        </div>
+
+        <div class="hud-item turn-info">
+          <span class="hud-label">Turn</span>
+          <span id="hud-turn-count" class="hud-val">Turn 1</span>
+        </div>
+
+        <div class="hud-item score-info">
+          <span class="hud-label">Score</span>
+          <div class="score-badges">
+            <span id="hud-correct-count" class="badge-pill correct">✓ 0</span>
+            <span id="hud-wrong-count" class="badge-pill wrong">✗ 0</span>
+          </div>
+        </div>
+
+        <div class="hud-item timer-info">
+          <span class="hud-label">Timer</span>
+          <span id="hud-timer" class="hud-val timer">00:00</span>
+        </div>
+      </header>
+
+      <!-- Main Layout: Board + Question Panel -->
+      <main class="game-layout">
+        <!-- Phaser Board Canvas -->
+        <div class="board-column">
+          <div id="phaser-container" class="phaser-wrapper"></div>
+        </div>
+
+        <!-- Question & Feedback Column -->
+        <div class="question-column">
+          <div id="action-banner" class="action-banner">
+            Answer the question to roll the dice!
+          </div>
+
+          <!-- Loading State -->
+          <div id="question-loading" class="card loading-card hidden">
+            <div class="spinner"></div>
+            <p>Consulting Gemini AI for the next matrix question...</p>
+            <span class="subtext">Verifying arithmetic accuracy...</span>
+          </div>
+
+          <!-- Error State -->
+          <div id="question-error" class="card error-card hidden">
+            <div class="error-icon">⚠️</div>
+            <h3>Question Generation Error</h3>
+            <p id="error-text">Failed to fetch verified question.</p>
+            <button id="retry-question-btn" class="btn btn-primary">Retry Question</button>
+          </div>
+
+          <!-- Question Card -->
+          <div id="question-container" class="card question-card">
+            <div class="question-header">
+              <span id="question-topic" class="topic-tag">Topic</span>
+              <span class="question-badge">Multiple Choice</span>
+            </div>
+
+            <div id="question-text" class="question-text">
+              Loading question...
+            </div>
+
+            <!-- Matrices display (A = [...], B = [...]) -->
+            <div id="question-matrices" class="question-matrices"></div>
+
+            <!-- 4 Options Grid -->
+            <div id="options-grid" class="options-grid"></div>
+
+            <!-- Feedback & Working -->
+            <div id="feedback-section" class="feedback-section hidden">
+              <div id="feedback-result" class="feedback-result"></div>
+              <div id="feedback-explanation" class="feedback-explanation"></div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- VICTORY MODAL -->
+    <div id="victory-modal" class="modal-overlay hidden">
+      <div class="modal-card victory-card">
+        <div class="victory-header">
+          <span class="trophy-icon">🏆</span>
+          <h2>Victory! You Reached Tile 100!</h2>
+          <p id="victory-name" class="victory-player-name"></p>
+        </div>
+
+        <div class="victory-stats-grid">
+          <div class="stat-box">
+            <span class="stat-num" id="victory-time">00:00</span>
+            <span class="stat-label">Total Time</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num" id="victory-turns">0</span>
+            <span class="stat-label">Turns Taken</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num text-success" id="victory-correct">0</span>
+            <span class="stat-label">Correct</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num text-danger" id="victory-wrong">0</span>
+            <span class="stat-label">Wrong</span>
+          </div>
+        </div>
+
+        <div class="leaderboard-section">
+          <h3>🏆 Top 10 Leaderboard</h3>
+          <div class="table-wrapper">
+            <table class="leaderboard-table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Player</th>
+                  <th>Time</th>
+                  <th>Turns</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody id="victory-leaderboard-body">
+                <tr><td colspan="5" style="text-align:center;">Loading scores...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button id="play-again-btn" class="btn btn-primary btn-large">Play Again</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STANDALONE LEADERBOARD MODAL -->
+    <div id="leaderboard-modal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2>🏆 Top 10 Leaderboard</h2>
+          <button id="close-leaderboard-btn" class="btn-close">&times;</button>
+        </div>
+        <div class="table-wrapper">
+          <table class="leaderboard-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Player</th>
+                <th>Time</th>
+                <th>Turns</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboard-body">
+              <tr><td colspan="5" style="text-align:center;">Loading scores...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
