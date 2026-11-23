@@ -154,6 +154,81 @@
             Read the lesson, then take the test.
           </div>
 
+          <!-- Vector addition position display under the message box -->
+          <div id="vector-move-box" class="vector-move-box" aria-live="polite">
+            <span class="vector-move-label">Position p = [row, col]:</span>
+            <code id="vector-move-text" class="vector-move-text">[1, 1] + [0, 0] = [1, 1]</code>
+          </div>
+
+          <!-- Power Cards & 3x1 Column Vector Inventory Q = [I; 2; A⁻¹] -->
+          <div id="power-cards-panel" class="card power-cards-panel">
+            <div class="power-panel-top">
+              <div class="power-inventory-block">
+                <div class="power-panel-title">Power Cards Inventory</div>
+                <div class="inventory-vector-row" aria-label="Inventory column vector Q">
+                  <span class="matrix-label">Q =</span>
+                  <div class="matrix-bracket-box">
+                    <div class="matrix-grid" style="grid-template-columns: auto;">
+                      <div class="matrix-row"><div class="matrix-cell">I</div></div>
+                      <div class="matrix-row"><div class="matrix-cell">2</div></div>
+                      <div class="matrix-row"><div class="matrix-cell">A⁻¹</div></div>
+                    </div>
+                  </div>
+                  <span class="matrix-label">=</span>
+                  <div class="matrix-bracket-box">
+                    <div class="matrix-grid" style="grid-template-columns: auto;">
+                      <div class="matrix-row"><div id="inv-count-identity" class="matrix-cell">0</div></div>
+                      <div class="matrix-row"><div id="inv-count-scalar" class="matrix-cell">0</div></div>
+                      <div class="matrix-row"><div id="inv-count-inverse" class="matrix-cell">0</div></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div id="card-reward-banner" class="card-reward-banner hidden" aria-live="polite"></div>
+            </div>
+
+            <div class="power-cards-list">
+              <div class="power-card-item" data-card="identity">
+                <div class="power-card-main">
+                  <div class="power-card-info">
+                    <span class="power-card-symbol">I</span>
+                    <div>
+                      <div class="power-card-name">Identity (I) <span id="card-badge-identity" class="power-card-count">0 / 2</span></div>
+                      <p class="power-card-note">Identity matrix leaves a position vector unchanged (I × p = p): ignores the next snake.</p>
+                    </div>
+                  </div>
+                  <button type="button" id="card-btn-identity" class="btn btn-secondary power-card-btn" disabled>Arm I</button>
+                </div>
+              </div>
+
+              <div class="power-card-item" data-card="scalar">
+                <div class="power-card-main">
+                  <div class="power-card-info">
+                    <span class="power-card-symbol">2</span>
+                    <div>
+                      <div class="power-card-name">Scalar (2) <span id="card-badge-scalar" class="power-card-count">0 / 2</span></div>
+                      <p class="power-card-note">Scalar multiplication scales a quantity (2 × roll): doubles your next roll total.</p>
+                    </div>
+                  </div>
+                  <button type="button" id="card-btn-scalar" class="btn btn-secondary power-card-btn" disabled>Arm 2×</button>
+                </div>
+              </div>
+
+              <div class="power-card-item" data-card="inverse">
+                <div class="power-card-main">
+                  <div class="power-card-info">
+                    <span class="power-card-symbol">A⁻¹</span>
+                    <div>
+                      <div class="power-card-name">Inverse (A⁻¹) <span id="card-badge-inverse" class="power-card-count">0 / 2</span></div>
+                      <p class="power-card-note">Matrix inverse reverses a step (A⁻¹A = I): returns to your tile before the last turn.</p>
+                    </div>
+                  </div>
+                  <button type="button" id="card-btn-inverse" class="btn btn-secondary power-card-btn" disabled>Use A⁻¹</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Loading State -->
           <div id="question-loading" class="card loading-card hidden">
             <div class="spinner"></div>

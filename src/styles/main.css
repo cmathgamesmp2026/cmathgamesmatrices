@@ -1241,3 +1241,186 @@ select:focus {
   padding: 6px 12px;
   font-size: 13px;
 }
+
+/* ===== STAGE 3: POWER CARDS, INVENTORY Q = [I; 2; A^-1], VECTOR MOVE ===== */
+.vector-move-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+.vector-move-label {
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.vector-move-text {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: #38bdf8;
+  font-size: 14px;
+}
+
+.power-cards-panel {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.power-panel-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.power-inventory-block {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.power-panel-title {
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.inventory-vector-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-reward-banner {
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+  background: rgba(16, 185, 129, 0.18);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  color: #34d399;
+}
+
+.card-reward-banner.cap-note {
+  background: rgba(148, 163, 184, 0.15);
+  border-color: var(--border-color);
+  color: var(--text-muted);
+}
+
+.card-reward-banner.reveal {
+  animation: cardRewardPop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+@keyframes cardRewardPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.85) translateY(4px);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.05) translateY(0);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.power-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.power-card-item {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.power-card-item.is-armed {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.power-card-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.power-card-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.power-card-symbol {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 38px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  background: #1e293b;
+  border: 1px solid #475569;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 800;
+  color: #38bdf8;
+}
+
+.power-card-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f1f5f9;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.power-card-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #334155;
+  color: #e2e8f0;
+}
+
+.power-card-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
+.power-card-btn {
+  padding: 8px 14px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.power-card-btn.armed {
+  background: #2563eb;
+  color: #fff;
+}

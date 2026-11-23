@@ -9,6 +9,13 @@ import { gameState } from '../game/gameState.js';
 import { rollDice } from '../game/diceLogic.js';
 import { resolveTurnMovement } from '../game/boardLogic.js';
 import { TurnMachine, TURN_STATES } from '../game/turnMachine.js';
+import {
+  PowerCardManager,
+  CARD_TYPES,
+  CARD_META,
+  getTilePositionVector,
+  formatVectorMove
+} from '../game/powerCards.js';
 import { renderOptionContent, renderMatricesSection } from './matrixRenderer.js';
 
 // Optional "Peek at lesson" button during the test (off by default).
@@ -84,6 +91,21 @@ export class HTMLUI {
       feedbackResult: document.getElementById('feedback-result'),
       feedbackExplanation: document.getElementById('feedback-explanation'),
       actionBanner: document.getElementById('action-banner'),
+      vectorMoveBox: document.getElementById('vector-move-box'),
+      vectorMoveText: document.getElementById('vector-move-text'),
+
+      // Power cards & inventory Q = [I; 2; A^-1]
+      invCountIdentity: document.getElementById('inv-count-identity'),
+      invCountScalar: document.getElementById('inv-count-scalar'),
+      invCountInverse: document.getElementById('inv-count-inverse'),
+      cardRewardBanner: document.getElementById('card-reward-banner'),
+      cardBadgeIdentity: document.getElementById('card-badge-identity'),
+      cardBadgeScalar: document.getElementById('card-badge-scalar'),
+      cardBadgeInverse: document.getElementById('card-badge-inverse'),
+      cardBtnIdentity: document.getElementById('card-btn-identity'),
+      cardBtnScalar: document.getElementById('card-btn-scalar'),
+      cardBtnInverse: document.getElementById('card-btn-inverse'),
+      powerCardItems: document.querySelectorAll('.power-card-item'),
 
       // Loading & Error states
       questionLoading: document.getElementById('question-loading'),
@@ -107,6 +129,9 @@ export class HTMLUI {
 
     this.selectedToken = 'car';
     this.machine = new TurnMachine();
+    this.cards = new PowerCardManager();
+    this.turnStartTile = 1;
+    this.pendingMoveContext = null;
     this.currentContent = null;
     this.loadId = 0;
     this.gameId = null;
@@ -160,6 +185,15 @@ export class HTMLUI {
       this.elements.peekBtn.addEventListener('click', () => this.handlePeek());
     }
     this.elements.rollBtn.addEventListener('click', () => this.handleRoll());
+    if (this.elements.cardBtnIdentity) {
+      this.elements.cardBtnIdentity.addEventListener('click', () => this.handleToggleArmCard(CARD_TYPES.IDENTITY));
+    }
+    if (this.elements.cardBtnScalar) {
+      this.elements.cardBtnScalar.addEventListener('click', () => this.handleToggleArmCard(CARD_TYPES.SCALAR));
+    }
+    if (this.elements.cardBtnInverse) {
+      this.elements.cardBtnInverse.addEventListener('click', () => this.handleUseInverseCard());
+    }
     document.addEventListener('keydown', (e) => this.handleKeydown(e));
 
     // Play again button
@@ -214,6 +248,11 @@ export class HTMLUI {
 
     // Fetch the first lesson (the first turn always begins at LEARN)
     this.machine.reset();
+    this.cards.reset();
+    this.turnStartTile = 1;
+    this.pendingMoveContext = null;
+    this.hideCardRewardBanner();
+    this.updateVectorMoveDisplay(1, 1);
     this.gameId = crypto.randomUUID();
     this.prefetch = null;
     this.beginTurn();
@@ -381,6 +420,107 @@ export class HTMLUI {
     } else if (state === TURN_STATES.TEST) {
       this.setBanner('Pick an answer (keys 1-4).');
     }
+
+    this.syncPowerCardsUI();
+  }
+
+  /** Update the 3x1 inventory vector Q = [I; 2; A^-1] and power card controls. */
+  syncPowerCardsUI() {
+    const el = this.elements;
+    if (!el.invCountIdentity) return;
+
+    const counts = this.cards.counts;
+    const armed = this.cards.armedCard;
+    const inAnswered = this.machine.state === TURN_STATES.ANSWERED;
+
+    el.invCountIdentity.textContent = String(counts.identity);
+    el.invCountScalar.textContent = String(counts.scalar);
+    el.invCountInverse.textContent = String(counts.inverse);
+
+    el.cardBadgeIdentity.textContent = `${counts.identity} / 2`;
+    el.cardBadgeScalar.textContent = `${counts.scalar} / 2`;
+    el.cardBadgeInverse.textContent = `${counts.inverse} / 2`;
+
+    const idArmed = armed === CARD_TYPES.IDENTITY;
+    el.cardBtnIdentity.textContent = idArmed ? 'Put back I' : 'Arm I';
+    el.cardBtnIdentity.disabled = !inAnswered || (!idArmed && counts.identity <= 0);
+    el.cardBtnIdentity.classList.toggle('armed', idArmed);
+
+    const scArmed = armed === CARD_TYPES.SCALAR;
+    el.cardBtnScalar.textContent = scArmed ? 'Put back 2×' : 'Arm 2×';
+    el.cardBtnScalar.disabled = !inAnswered || (!scArmed && counts.scalar <= 0);
+    el.cardBtnScalar.classList.toggle('armed', scArmed);
+
+    el.cardBtnInverse.textContent = 'Use A⁻¹';
+    el.cardBtnInverse.disabled = !this.cards.canUseInverse(this.machine.state);
+
+    el.powerCardItems.forEach((item) => {
+      const type = item.dataset.card;
+      item.classList.toggle('is-armed', armed === type);
+    });
+  }
+
+  updateVectorMoveDisplay(fromTile, toTile, suffix = '') {
+    if (!this.elements.vectorMoveText) return;
+    const vm = formatVectorMove(fromTile, toTile);
+    this.elements.vectorMoveText.textContent = suffix ? `${vm.text} (${suffix})` : vm.text;
+  }
+
+  showCardRewardBanner(awardedType, isCorrect) {
+    const banner = this.elements.cardRewardBanner;
+    if (!banner) return;
+    banner.classList.remove('hidden', 'reveal', 'cap-note');
+
+    if (!isCorrect) {
+      banner.classList.add('hidden');
+      return;
+    }
+
+    if (awardedType) {
+      const meta = CARD_META[awardedType];
+      banner.textContent = `✨ Awarded Power Card: ${meta.name}!`;
+      // Trigger short reveal animation
+      void banner.offsetWidth;
+      banner.classList.add('reveal');
+    } else {
+      banner.textContent = 'Inventory full (2/2 of every card).';
+      banner.classList.add('cap-note');
+    }
+  }
+
+  hideCardRewardBanner() {
+    if (this.elements.cardRewardBanner) {
+      this.elements.cardRewardBanner.classList.add('hidden');
+      this.elements.cardRewardBanner.classList.remove('reveal', 'cap-note');
+    }
+  }
+
+  handleToggleArmCard(cardType) {
+    const res = this.cards.toggleArm(cardType, this.machine.state);
+    if (!res.ok) return;
+
+    const meta = CARD_META[cardType];
+    if (res.action === 'armed') {
+      this.setBanner(`${meta.name} armed for your roll!`, 'action-banner active');
+    } else {
+      this.setBanner(`${meta.name} returned to inventory.`, 'action-banner active');
+    }
+    this.syncPowerCardsUI();
+  }
+
+  handleUseInverseCard() {
+    const res = this.cards.useInverse(this.machine.state, gameState.currentTile);
+    if (!res.ok) return;
+
+    gameState.setCurrentTile(res.targetTile);
+    this.turnStartTile = res.targetTile;
+    events.emit(EVENTS.TELEPORT_TOKEN, { tile: res.targetTile });
+    this.updateVectorMoveDisplay(res.fromTile, res.targetTile, 'A⁻¹ inverse return');
+    this.setBanner(
+      `Used Inverse (A⁻¹)! Returned from Tile ${res.fromTile} to Tile ${res.targetTile}. Press Roll to continue.`,
+      'action-banner active'
+    );
+    this.syncPowerCardsUI();
   }
 
   setBanner(text, className = 'action-banner') {
@@ -518,7 +658,12 @@ export class HTMLUI {
     this.elements.feedbackExplanation.appendChild(working);
     this.elements.feedbackExplanation.appendChild(document.createTextNode(q.explanation || 'See your notes for the steps.'));
 
-    this.setBanner('Answered! Press Roll to move.', 'action-banner active');
+    // 4. REWARD: if correct, award one random power card (cap 2 each). If wrong, no card.
+    const awardedCard = this.cards.awardRandomCard(isCorrect);
+    this.showCardRewardBanner(awardedCard, isCorrect);
+    this.turnStartTile = gameState.currentTile;
+
+    this.setBanner('Answered! You may use a power card or press Roll to move.', 'action-banner active');
     this.syncTurnUI();
   }
 
@@ -527,11 +672,21 @@ export class HTMLUI {
     if (!this.machine.requestRoll()) return;
 
     const isCorrect = this.machine.answerCorrect;
+    const startTile = gameState.currentTile;
+    this.turnStartTile = startTile;
+
     const roll = rollDice({ difficulty: gameState.difficulty, isCorrect });
-    const movement = resolveTurnMovement(gameState.currentTile, roll.move);
+    const resolved = this.cards.resolveRollWithCards(startTile, roll.move);
+    const { movement, effectiveMove, scalarConsumed, identityConsumed, blockedSnakeTile } = resolved;
+    this.pendingMoveContext = {
+      startTile,
+      scalarConsumed,
+      identityConsumed,
+      blockedSnakeTile
+    };
 
     this.setBanner(
-      `Rolling ${gameState.difficulty === 'Hard' ? '2 dice' : '1 die'}... (${isCorrect ? 'Correct bias' : 'Wrong bias'})`,
+      `Rolling ${gameState.difficulty === 'Hard' ? '2 dice' : '1 die'}... (${isCorrect ? 'Correct bias' : 'Wrong bias'}${scalarConsumed ? ', Scalar 2× armed' : ''})`,
       'action-banner active'
     );
     this.syncTurnUI();
@@ -543,6 +698,9 @@ export class HTMLUI {
 
       let rollDesc = roll.diceValues.join(' + ');
       if (roll.diceValues.length > 1) rollDesc += ` = ${roll.total}`;
+      if (scalarConsumed) {
+        rollDesc = `2 × (${rollDesc}) = ${effectiveMove}`;
+      }
       this.setBanner(`Rolled ${rollDesc}! Moving forward...`, 'action-banner active');
 
       events.emit(EVENTS.MOVE_TOKEN, {
@@ -565,14 +723,23 @@ export class HTMLUI {
     // Ignore stray completion events that do not belong to a move in progress.
     if (this.machine.state !== TURN_STATES.MOVING) return;
 
+    const ctx = this.pendingMoveContext || { startTile: this.turnStartTile };
+    this.pendingMoveContext = null;
+
+    this.updateVectorMoveDisplay(ctx.startTile, finalTile);
+    this.cards.recordCompletedTurn(ctx.startTile);
+
     gameState.setCurrentTile(finalTile);
     gameState.completeTurn(); // a completed turn = lesson + question + roll + move
+    this.syncPowerCardsUI();
 
     // Display feedback on tile landing
     if (effect === 'ladder') {
       this.setBanner(`🎉 Awesome! Climbed a ladder to Tile ${finalTile}!`, 'action-banner ladder');
     } else if (effect === 'snake') {
       this.setBanner(`🐍 Oh no! Slid down a snake to Tile ${finalTile}!`, 'action-banner snake');
+    } else if (effect === 'snake_blocked') {
+      this.setBanner(`🛡️ Identity (I) blocked the snake at Tile ${finalTile} (I × p = p)!`, 'action-banner ladder');
     } else if (effect === 'win') {
       this.setBanner('🏆 VICTORY! Reached Tile 100!', 'action-banner win');
     } else {

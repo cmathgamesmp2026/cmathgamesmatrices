@@ -45,6 +45,12 @@ export default class BoardScene extends Phaser.Scene {
       this.token.teleportTo(1);
     });
 
+    events.on(EVENTS.TELEPORT_TOKEN, ({ tile } = {}) => {
+      if (typeof tile === 'number') {
+        this.token.teleportTo(tile);
+      }
+    });
+
     // Roll Dice
     events.on(EVENTS.ROLL_DICE_ANIMATION, ({ diceValues, total }) => {
       this.diceAnimator.roll({
