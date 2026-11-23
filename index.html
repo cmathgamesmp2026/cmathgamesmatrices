@@ -143,27 +143,52 @@
 
         <!-- Question & Feedback Column -->
         <div class="question-column">
+          <!-- Step indicator: 1 Learn, 2 Test, 3 Roll -->
+          <ol id="step-indicator" class="step-indicator" aria-label="Turn steps">
+            <li class="step-item" data-step="1"><span class="step-num">1</span> Learn</li>
+            <li class="step-item" data-step="2"><span class="step-num">2</span> Test</li>
+            <li class="step-item" data-step="3"><span class="step-num">3</span> Roll</li>
+          </ol>
+
           <div id="action-banner" class="action-banner">
-            Answer the question to roll the dice!
+            Read the lesson, then take the test.
           </div>
 
           <!-- Loading State -->
           <div id="question-loading" class="card loading-card hidden">
             <div class="spinner"></div>
-            <p>Consulting Gemini AI for the next matrix question...</p>
-            <span class="subtext">Verifying arithmetic accuracy...</span>
+            <p>Preparing your next lesson...</p>
+            <span class="subtext">Checking the maths before it is shown...</span>
           </div>
 
           <!-- Error State -->
           <div id="question-error" class="card error-card hidden">
             <div class="error-icon">⚠️</div>
-            <h3>Question Generation Error</h3>
-            <p id="error-text">Failed to fetch verified question.</p>
-            <button id="retry-question-btn" class="btn btn-primary">Retry Question</button>
+            <h3>Could not load the lesson</h3>
+            <p id="error-text">Failed to fetch a verified lesson.</p>
+            <button id="retry-question-btn" class="btn btn-primary">Retry</button>
           </div>
 
-          <!-- Question Card -->
-          <div id="question-container" class="card question-card">
+          <!-- Lesson Card (step 1) -->
+          <div id="lesson-container" class="card lesson-card hidden">
+            <div class="question-header">
+              <span id="lesson-topic" class="topic-tag">Topic</span>
+              <span id="lesson-topic-count" class="question-badge">Topic 1 of 10</span>
+            </div>
+            <h2 id="lesson-title" class="lesson-title"></h2>
+            <ul id="lesson-key-points" class="lesson-key-points"></ul>
+            <div class="lesson-example">
+              <div class="lesson-example-label">Worked example</div>
+              <p id="lesson-example-desc" class="lesson-example-desc"></p>
+              <div id="lesson-example-matrices" class="question-matrices"></div>
+              <ol id="lesson-example-steps" class="lesson-steps"></ol>
+              <div id="lesson-example-result" class="lesson-result"></div>
+            </div>
+            <button id="ready-btn" class="btn btn-primary btn-large lesson-ready-btn">I'm ready, test me <span class="key-hint">Enter</span></button>
+          </div>
+
+          <!-- Question Card (steps 2 and 3) -->
+          <div id="question-container" class="card question-card hidden">
             <div class="question-header">
               <span id="question-topic" class="topic-tag">Topic</span>
               <div class="header-badges">
@@ -186,6 +211,12 @@
             <div id="feedback-section" class="feedback-section hidden">
               <div id="feedback-result" class="feedback-result"></div>
               <div id="feedback-explanation" class="feedback-explanation"></div>
+            </div>
+
+            <!-- Roll (only enabled after an answer) -->
+            <div class="roll-area">
+              <button id="roll-btn" class="btn btn-primary btn-large roll-btn" disabled>🎲 Roll <span class="key-hint">Space</span></button>
+              <div id="roll-hint" class="roll-hint">Answer the question to roll</div>
             </div>
           </div>
         </div>

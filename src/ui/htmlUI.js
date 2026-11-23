@@ -8,7 +8,12 @@ import { events, EVENTS } from '../game/events.js';
 import { gameState } from '../game/gameState.js';
 import { rollDice } from '../game/diceLogic.js';
 import { resolveTurnMovement } from '../game/boardLogic.js';
+import { TurnMachine, TURN_STATES } from '../game/turnMachine.js';
+import { nextPlaceholderContent, resetPlaceholderContent } from '../game/placeholderContent.js';
 import { renderOptionContent, renderMatricesSection } from './matrixRenderer.js';
+
+// Stage 1: lessons and questions are placeholders. Stage 2 turns this off and uses Gemini.
+const USE_PLACEHOLDER_CONTENT = true;
 
 export const TOKEN_ICONS = {
   car: '🏎️',
@@ -48,6 +53,19 @@ export class HTMLUI {
       hudTimer: document.getElementById('hud-timer'),
 
       // Question card
+      stepItems: document.querySelectorAll('.step-item'),
+      lessonContainer: document.getElementById('lesson-container'),
+      lessonTopic: document.getElementById('lesson-topic'),
+      lessonTopicCount: document.getElementById('lesson-topic-count'),
+      lessonTitle: document.getElementById('lesson-title'),
+      lessonKeyPoints: document.getElementById('lesson-key-points'),
+      lessonExampleDesc: document.getElementById('lesson-example-desc'),
+      lessonExampleMatrices: document.getElementById('lesson-example-matrices'),
+      lessonExampleSteps: document.getElementById('lesson-example-steps'),
+      lessonExampleResult: document.getElementById('lesson-example-result'),
+      readyBtn: document.getElementById('ready-btn'),
+      rollBtn: document.getElementById('roll-btn'),
+      rollHint: document.getElementById('roll-hint'),
       questionContainer: document.getElementById('question-container'),
       questionTopic: document.getElementById('question-topic'),
       questionDiffBadge: document.getElementById('question-diff-badge'),
@@ -80,9 +98,9 @@ export class HTMLUI {
     };
 
     this.selectedToken = 'car';
-    this.currentQuestion = null;
-    this.prefetchedQuestion = null;
-    this.isFetchingQuestion = false;
+    this.machine = new TurnMachine();
+    this.currentContent = null;
+    this.loadId = 0;
 
     this.initEventListeners();
     this.initBusListeners();
@@ -119,11 +137,16 @@ export class HTMLUI {
       this.elements.leaderboardModal.classList.add('hidden');
     });
 
-    // Retry question button
+    // Retry button (shown if a lesson could not be loaded)
     this.elements.retryQuestionBtn.addEventListener('click', () => {
       this.elements.questionError.classList.add('hidden');
-      this.loadTurnQuestion();
+      this.beginTurn();
     });
+
+    // Turn flow controls
+    this.elements.readyBtn.addEventListener('click', () => this.handleReady());
+    this.elements.rollBtn.addEventListener('click', () => this.handleRoll());
+    document.addEventListener('keydown', (e) => this.handleKeydown(e));
 
     // Play again button
     this.elements.playAgainBtn.addEventListener('click', () => this.handlePlayAgain());
@@ -142,17 +165,14 @@ export class HTMLUI {
   }
 
   handleDifficultyChange(newDifficulty) {
-    if (gameState.isAnswering || gameState.isRollingOrMoving) return;
+    // Difficulty can only change while the lesson is showing (LEARN state).
+    if (this.machine.state !== TURN_STATES.LEARN) return;
     if (gameState.difficulty === newDifficulty) return;
 
     gameState.setDifficulty(newDifficulty);
 
-    // Invalidate stale prefetch for the previous difficulty
-    this.prefetchedQuestion = null;
-
-    // Reload question for current turn under the new difficulty
-    this.elements.actionBanner.textContent = `Switched to ${newDifficulty} mode (${newDifficulty === 'Hard' ? '2 Dice' : '1 Die'})! Loading question...`;
-    this.loadTurnQuestion();
+    // Reload this turn's lesson + question under the new difficulty
+    this.beginTurn();
   }
 
   handleStartGame() {
@@ -178,8 +198,10 @@ export class HTMLUI {
       difficulty: gameState.difficulty
     });
 
-    // Fetch first question
-    this.loadTurnQuestion();
+    // Fetch the first lesson (the first turn always begins at LEARN)
+    this.machine.reset();
+    resetPlaceholderContent();
+    this.beginTurn();
   }
 
   updateHUD(stats) {
@@ -188,15 +210,13 @@ export class HTMLUI {
       this.elements.hudTokenIcon.textContent = TOKEN_ICONS[stats.selectedToken] || '🏎️';
     }
 
-    // Update in-game difficulty toggle buttons
+    // Update in-game difficulty toggle buttons (enabled/disabled state is set in syncTurnUI)
     const isHard = stats.difficulty === 'Hard';
     if (this.elements.diffBtnEasy) {
       this.elements.diffBtnEasy.classList.toggle('active', !isHard);
-      this.elements.diffBtnEasy.disabled = gameState.isAnswering || gameState.isRollingOrMoving;
     }
     if (this.elements.diffBtnHard) {
       this.elements.diffBtnHard.classList.toggle('active', isHard);
-      this.elements.diffBtnHard.disabled = gameState.isAnswering || gameState.isRollingOrMoving;
     }
 
     // Update question card difficulty badge
@@ -213,109 +233,156 @@ export class HTMLUI {
     this.elements.hudTimer.textContent = stats.displayTime;
   }
 
+  // ---------------------------------------------------------------------
+  // Turn flow: LEARN -> TEST -> ANSWERED -> ROLLING -> MOVING
+  // The TurnMachine decides what is allowed; the UI only reflects it.
+  // ---------------------------------------------------------------------
+
   /**
-   * Fetches the next question with up to 2 retries on failure (total 3 attempts).
+   * Returns the lesson + question for the current turn.
+   * Stage 1 uses placeholder content; Stage 2 swaps in the Gemini endpoint.
    */
-  async fetchQuestionWithRetry(difficulty, previousTopic, usedQuestions, retries = 2) {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        const res = await fetch('/api/question', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ difficulty, previousTopic, usedQuestions })
-        });
-        const data = await res.json();
-        if (data.success && data.question) {
-          return data.question;
-        }
-        throw new Error(data.error || 'Server could not produce a verified question');
-      } catch (err) {
-        if (attempt === retries) throw err;
-        await new Promise((r) => setTimeout(r, 900));
-      }
+  async getTurnContent() {
+    if (USE_PLACEHOLDER_CONTENT) {
+      return nextPlaceholderContent();
     }
+    throw new Error('The lesson service is not connected yet.');
   }
 
-  /**
-   * Starts pre-fetching the upcoming question in background while player rolls/moves
-   */
-  async prefetchNextQuestion() {
-    if (this.isFetchingQuestion || this.prefetchedQuestion) return;
-    this.isFetchingQuestion = true;
-    try {
-      this.prefetchedQuestion = await this.fetchQuestionWithRetry(
-        gameState.difficulty,
-        gameState.previousTopic,
-        gameState.usedQuestions
-      );
-    } catch (err) {
-      console.warn('[Prefetch Notice] Background prefetch will retry on turn demand:', err.message);
-      this.prefetchedQuestion = null;
-    } finally {
-      this.isFetchingQuestion = false;
-    }
-  }
+  /** Show the lesson card for a new turn (the machine is already in LEARN). */
+  async beginTurn() {
+    const loadId = ++this.loadId;
+    const el = this.elements;
 
-  /**
-   * Loads question for current turn: uses pre-fetched question if available, else loads live.
-   */
-  async loadTurnQuestion() {
-    this.elements.questionContainer.classList.add('hidden');
-    this.elements.questionError.classList.add('hidden');
-    this.elements.questionLoading.classList.remove('hidden');
-    this.elements.feedbackSection.classList.add('hidden');
-
-    const isHard = gameState.difficulty === 'Hard';
-    this.elements.actionBanner.textContent = `Answer the question to roll ${isHard ? '2 dice' : '1 die'}!`;
-    this.elements.actionBanner.className = 'action-banner';
+    el.lessonContainer.classList.add('hidden');
+    el.questionContainer.classList.add('hidden');
+    el.questionError.classList.add('hidden');
+    el.questionLoading.classList.remove('hidden');
+    this.syncTurnUI();
 
     try {
-      let q = this.prefetchedQuestion;
-      this.prefetchedQuestion = null;
+      const content = await this.getTurnContent();
+      if (loadId !== this.loadId) return; // a newer load replaced this one
 
-      if (!q) {
-        q = await this.fetchQuestionWithRetry(
-          gameState.difficulty,
-          gameState.previousTopic,
-          gameState.usedQuestions
-        );
-      }
+      this.currentContent = content;
+      this.renderLesson(content);
+      el.questionLoading.classList.add('hidden');
+      el.lessonContainer.classList.remove('hidden');
 
-      this.currentQuestion = q;
-      this.displayQuestion(q);
-
-      // Start timer on first question display
+      // The timer starts when the first lesson appears.
       gameState.startTimer();
-
-      // Trigger background prefetch for the NEXT turn
-      this.prefetchNextQuestion();
+      this.syncTurnUI();
     } catch (err) {
-      console.error('[Question Load Error]:', err);
-      this.elements.questionLoading.classList.add('hidden');
-      this.elements.errorText.textContent = err.message || 'Unable to connect to Gemini API. Please check your network or API key.';
-      this.elements.questionError.classList.remove('hidden');
+      if (loadId !== this.loadId) return;
+      console.error('[Lesson Load Error]:', err);
+      el.questionLoading.classList.add('hidden');
+      el.errorText.textContent = err.message || 'Could not load the lesson. Please try again.';
+      el.questionError.classList.remove('hidden');
     }
   }
 
-  displayQuestion(q) {
-    this.elements.questionLoading.classList.add('hidden');
-    this.elements.questionError.classList.add('hidden');
-    this.elements.questionContainer.classList.remove('hidden');
+  /** Keep step indicator, banner, roll button and difficulty toggle in sync with the machine. */
+  syncTurnUI() {
+    const el = this.elements;
+    const state = this.machine.state;
+    const step = this.machine.step;
 
-    // Topic tag, Difficulty badge & Question Statement
-    this.elements.questionTopic.textContent = q.topic;
-    if (this.elements.questionDiffBadge) {
-      const isHard = gameState.difficulty === 'Hard';
-      this.elements.questionDiffBadge.textContent = isHard ? 'Hard • 2 Dice' : 'Easy • 1 Die';
-      this.elements.questionDiffBadge.className = `difficulty-badge ${isHard ? 'hard' : 'easy'}`;
+    el.stepItems.forEach((item) => {
+      const n = Number(item.dataset.step);
+      item.classList.toggle('current', n === step);
+      item.classList.toggle('done', n < step);
+    });
+
+    const rollEnabled = this.machine.canRoll();
+    el.rollBtn.disabled = !rollEnabled;
+    if (state === TURN_STATES.ANSWERED) {
+      el.rollHint.textContent = 'Press Roll (or Space) to roll the dice';
+    } else if (state === TURN_STATES.ROLLING || state === TURN_STATES.MOVING) {
+      el.rollHint.textContent = 'Rolling...';
+    } else {
+      el.rollHint.textContent = 'Answer the question to roll';
     }
-    this.elements.questionText.textContent = q.question;
+
+    // Difficulty can only change while reading the lesson.
+    const canChangeDifficulty = state === TURN_STATES.LEARN;
+    if (el.diffBtnEasy) el.diffBtnEasy.disabled = !canChangeDifficulty;
+    if (el.diffBtnHard) el.diffBtnHard.disabled = !canChangeDifficulty;
+
+    if (state === TURN_STATES.LEARN) {
+      this.setBanner('Read the lesson, then take the test.');
+    } else if (state === TURN_STATES.TEST) {
+      this.setBanner('Pick an answer (keys 1-4).');
+    }
+  }
+
+  setBanner(text, className = 'action-banner') {
+    this.elements.actionBanner.textContent = text;
+    this.elements.actionBanner.className = className;
+  }
+
+  /** Split "5. Transpose of a matrix" into { number: 5, name: 'Transpose of a matrix' }. */
+  parseTopic(topic) {
+    const match = String(topic || '').match(/^\s*(\d+)\s*[.:\-–)]?\s*(.*)$/);
+    return match ? { number: Number(match[1]), name: match[2] || String(topic) } : { number: null, name: String(topic || '') };
+  }
+
+  renderLesson(content) {
+    const el = this.elements;
+    const { lesson, topic } = content;
+    const parsed = this.parseTopic(topic);
+
+    el.lessonTopic.textContent = parsed.name;
+    el.lessonTopicCount.textContent = parsed.number ? `Topic ${parsed.number} of 10` : '';
+    el.lessonTitle.textContent = lesson.title;
+
+    el.lessonKeyPoints.innerHTML = '';
+    lesson.keyPoints.forEach((point) => {
+      const li = document.createElement('li');
+      li.textContent = point;
+      el.lessonKeyPoints.appendChild(li);
+    });
+
+    const ex = lesson.example;
+    el.lessonExampleDesc.textContent = ex.description || '';
+    el.lessonExampleMatrices.innerHTML = renderMatricesSection(ex.matrices);
+    el.lessonExampleMatrices.classList.toggle('hidden', !ex.matrices);
+
+    el.lessonExampleSteps.innerHTML = '';
+    (ex.steps || []).forEach((step) => {
+      const li = document.createElement('li');
+      li.textContent = step;
+      el.lessonExampleSteps.appendChild(li);
+    });
+
+    el.lessonExampleResult.innerHTML = `<span>Result:</span> ${renderOptionContent(ex.result)}`;
+  }
+
+  /** LEARN -> TEST: show the question for the same topic. */
+  handleReady() {
+    if (!this.machine.startTest()) return;
+    this.elements.lessonContainer.classList.add('hidden');
+    this.displayQuestion(this.currentContent);
+    this.syncTurnUI();
+  }
+
+  displayQuestion(content) {
+    const q = content.question;
+    const el = this.elements;
+
+    el.questionContainer.classList.remove('hidden');
+    el.feedbackSection.classList.add('hidden');
+
+    el.questionTopic.textContent = this.parseTopic(content.topic).name;
+    const isHard = gameState.difficulty === 'Hard';
+    el.questionDiffBadge.textContent = isHard ? 'Hard • 2 Dice' : 'Easy • 1 Die';
+    el.questionDiffBadge.className = `difficulty-badge ${isHard ? 'hard' : 'easy'}`;
+    el.questionText.textContent = q.text;
 
     // Render Matrix data if provided (e.g. A = [...], B = [...])
-    this.elements.questionMatrices.innerHTML = renderMatricesSection(q.matrices);
+    el.questionMatrices.innerHTML = renderMatricesSection(q.matrices);
 
     // Options (4 choices)
-    this.elements.optionsGrid.innerHTML = '';
+    el.optionsGrid.innerHTML = '';
     const optionLabels = ['A', 'B', 'C', 'D'];
 
     q.options.forEach((opt, idx) => {
@@ -334,38 +401,30 @@ export class HTMLUI {
       `;
 
       btn.addEventListener('click', () => this.handleOptionClick(idx));
-      this.elements.optionsGrid.appendChild(btn);
+      el.optionsGrid.appendChild(btn);
     });
   }
 
+  /** TEST -> ANSWERED: lock the options, show correct/wrong and the working. */
   handleOptionClick(selectedIndex) {
-    if (gameState.isAnswering || gameState.isRollingOrMoving) return;
-    gameState.isAnswering = true;
-    gameState.isRollingOrMoving = true;
+    const q = this.currentContent && this.currentContent.question;
+    if (!q || selectedIndex < 0 || selectedIndex >= q.options.length) return;
 
-    // Update difficulty controls disabled state
-    this.updateHUD(gameState.getSummary());
-
-    const q = this.currentQuestion;
     const isCorrect = selectedIndex === q.correctIndex;
+    // Only the first answer is accepted; any later click is ignored here.
+    if (!this.machine.submitAnswer(selectedIndex, isCorrect)) return;
 
     // Lock options & highlight results
-    const optionButtons = this.elements.optionsGrid.querySelectorAll('.option-card');
-    optionButtons.forEach((btn, idx) => {
+    this.elements.optionsGrid.querySelectorAll('.option-card').forEach((btn, idx) => {
       btn.disabled = true;
-      if (idx === q.correctIndex) {
-        btn.classList.add('correct');
-      }
-      if (idx === selectedIndex && !isCorrect) {
-        btn.classList.add('wrong');
-      }
+      if (idx === q.correctIndex) btn.classList.add('correct');
+      if (idx === selectedIndex && !isCorrect) btn.classList.add('wrong');
     });
 
-    // Record turn in gameState
-    gameState.recordTurn({
+    gameState.recordAnswer({
       isCorrect,
-      topic: q.topic,
-      questionText: q.question
+      topic: this.currentContent.topic,
+      questionText: q.text
     });
 
     // Show feedback & working explanation
@@ -383,41 +442,38 @@ export class HTMLUI {
         <span>Incorrect. Low roll chance applied (70% for 1, 2, 3).</span>
       `;
     }
-    this.elements.feedbackExplanation.innerHTML = `<strong>Working:</strong> ${q.explanation || 'See textbook matrix steps.'}`;
+    this.elements.feedbackExplanation.innerHTML = '';
+    const working = document.createElement('strong');
+    working.textContent = 'Working: ';
+    this.elements.feedbackExplanation.appendChild(working);
+    this.elements.feedbackExplanation.appendChild(document.createTextNode(q.explanation || 'See your notes for the steps.'));
 
-    // Perform biased dice roll
-    const roll = rollDice({
-      difficulty: gameState.difficulty,
-      isCorrect
-    });
+    this.setBanner('Answered! Press Roll to move.', 'action-banner active');
+    this.syncTurnUI();
+  }
 
-    // Calculate movement path & snake/ladder outcomes
+  /** ANSWERED -> ROLLING -> MOVING. Ignored in every other state. */
+  handleRoll() {
+    if (!this.machine.requestRoll()) return;
+
+    const isCorrect = this.machine.answerCorrect;
+    const roll = rollDice({ difficulty: gameState.difficulty, isCorrect });
     const movement = resolveTurnMovement(gameState.currentTile, roll.move);
 
-    // Update banner & trigger Phaser dice animation
-    if (gameState.difficulty === 'Hard') {
-      this.elements.actionBanner.textContent = `Rolling 2 dice... (${isCorrect ? 'Correct bias' : 'Wrong bias'})`;
-    } else {
-      this.elements.actionBanner.textContent = `Rolling 1 die... (${isCorrect ? 'Correct bias' : 'Wrong bias'})`;
-    }
-    this.elements.actionBanner.className = 'action-banner active';
-
-    // Trigger Phaser Dice Roll Animation
-    events.emit(EVENTS.ROLL_DICE_ANIMATION, {
-      diceValues: roll.diceValues,
-      total: roll.total,
-      isCorrect
-    });
+    this.setBanner(
+      `Rolling ${gameState.difficulty === 'Hard' ? '2 dice' : '1 die'}... (${isCorrect ? 'Correct bias' : 'Wrong bias'})`,
+      'action-banner active'
+    );
+    this.syncTurnUI();
 
     // Listen once for dice animation complete, then trigger token movement
     events.once(EVENTS.DICE_ANIMATION_COMPLETE, () => {
-      let rollDesc = roll.diceValues.join(' + ');
-      if (roll.diceValues.length > 1) {
-        rollDesc += ` = ${roll.total}`;
-      }
-      this.elements.actionBanner.textContent = `Rolled ${rollDesc}! Moving forward...`;
+      if (!this.machine.startMoving()) return;
 
-      // Trigger Token Movement in Phaser
+      let rollDesc = roll.diceValues.join(' + ');
+      if (roll.diceValues.length > 1) rollDesc += ` = ${roll.total}`;
+      this.setBanner(`Rolled ${rollDesc}! Moving forward...`, 'action-banner active');
+
       events.emit(EVENTS.MOVE_TOKEN, {
         path: movement.path,
         intermediateTile: movement.intermediateTile,
@@ -425,39 +481,70 @@ export class HTMLUI {
         effect: movement.effect
       });
     });
+
+    // Trigger Phaser Dice Roll Animation
+    events.emit(EVENTS.ROLL_DICE_ANIMATION, {
+      diceValues: roll.diceValues,
+      total: roll.total,
+      isCorrect
+    });
   }
 
   handleMoveCompleted(finalTile, effect) {
+    // Ignore stray completion events that do not belong to a move in progress.
+    if (this.machine.state !== TURN_STATES.MOVING) return;
+
     gameState.setCurrentTile(finalTile);
-    gameState.isAnswering = false;
+    gameState.completeTurn(); // a completed turn = lesson + question + roll + move
 
     // Display feedback on tile landing
     if (effect === 'ladder') {
-      this.elements.actionBanner.textContent = `🎉 Awesome! Climbed a ladder to Tile ${finalTile}!`;
-      this.elements.actionBanner.className = 'action-banner ladder';
+      this.setBanner(`🎉 Awesome! Climbed a ladder to Tile ${finalTile}!`, 'action-banner ladder');
     } else if (effect === 'snake') {
-      this.elements.actionBanner.textContent = `🐍 Oh no! Slid down a snake to Tile ${finalTile}!`;
-      this.elements.actionBanner.className = 'action-banner snake';
+      this.setBanner(`🐍 Oh no! Slid down a snake to Tile ${finalTile}!`, 'action-banner snake');
     } else if (effect === 'win') {
-      this.elements.actionBanner.textContent = `🏆 VICTORY! Reached Tile 100!`;
-      this.elements.actionBanner.className = 'action-banner win';
+      this.setBanner('🏆 VICTORY! Reached Tile 100!', 'action-banner win');
     } else {
-      this.elements.actionBanner.textContent = `Landed on Tile ${finalTile}.`;
+      this.setBanner(`Landed on Tile ${finalTile}.`);
     }
 
     if (finalTile === 100) {
-      // Victory!
       gameState.stopTimer();
       gameState.isGameOver = true;
-      gameState.isRollingOrMoving = false;
       this.handleGameWon();
     } else {
-      // Prepare for next turn
-      gameState.isRollingOrMoving = false;
-      this.updateHUD(gameState.getSummary());
+      // The machine stays in MOVING until the next lesson is ready, so no input slips through.
       setTimeout(() => {
-        this.loadTurnQuestion();
+        if (this.machine.nextTurn()) this.beginTurn();
       }, 1400);
+    }
+  }
+
+  /** Enter = continue from lesson, 1-4 = pick option, Space = roll. */
+  handleKeydown(e) {
+    if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    const el = this.elements;
+    if (el.gameScreen.classList.contains('hidden') || gameState.isGameOver) return;
+    if (!el.victoryModal.classList.contains('hidden') || !el.leaderboardModal.classList.contains('hidden')) return;
+    const tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+
+    if (e.key === 'Enter') {
+      const lessonVisible = !el.lessonContainer.classList.contains('hidden');
+      if (lessonVisible && this.machine.state === TURN_STATES.LEARN) {
+        e.preventDefault();
+        this.handleReady();
+      }
+    } else if (e.key >= '1' && e.key <= '4') {
+      if (this.machine.state === TURN_STATES.TEST) {
+        e.preventDefault();
+        this.handleOptionClick(Number(e.key) - 1);
+      }
+    } else if (e.key === ' ' || e.code === 'Space') {
+      if (this.machine.canRoll()) {
+        e.preventDefault();
+        this.handleRoll();
+      }
     }
   }
 

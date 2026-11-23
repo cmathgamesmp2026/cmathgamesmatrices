@@ -1,4 +1,5 @@
 import { events, EVENTS } from './events.js';
+import { START_TILE } from './boardLogic.js';
 
 class GameState {
   constructor() {
@@ -9,7 +10,7 @@ class GameState {
     this.playerName = '';
     this.selectedToken = 'car';
     this.difficulty = 'Easy';
-    this.currentTile = 1;
+    this.currentTile = START_TILE;
     this.turnsTaken = 0;
     this.correctAnswers = 0;
     this.wrongAnswers = 0;
@@ -18,15 +19,13 @@ class GameState {
     this.timerStarted = false;
     this.previousTopic = null;
     this.usedQuestions = [];
-    this.currentQuestion = null;
-    this.nextPrefetchedQuestion = null;
-    this.isAnswering = false;
-    this.isRollingOrMoving = false;
     this.isGameOver = false;
   }
 
   init(name, selectedToken = 'car', difficulty = 'Easy') {
     this.reset();
+    // Every game, for every player, starts on tile 1 (never random).
+    this.currentTile = START_TILE;
     this.playerName = (name || 'Player').trim().slice(0, 100);
     this.selectedToken = selectedToken || 'car';
     this.difficulty = difficulty === 'Hard' ? 'Hard' : 'Easy';
@@ -67,8 +66,8 @@ class GameState {
     }
   }
 
-  recordTurn({ isCorrect, topic, questionText }) {
-    this.turnsTaken += 1;
+  /** Called when the player submits an answer (counts correct/wrong only). */
+  recordAnswer({ isCorrect, topic, questionText }) {
     if (isCorrect) {
       this.correctAnswers += 1;
     } else {
@@ -80,6 +79,12 @@ class GameState {
     if (questionText && !this.usedQuestions.includes(questionText)) {
       this.usedQuestions.push(questionText.slice(0, 120));
     }
+    this.notifyUpdate();
+  }
+
+  /** Called when a turn (lesson + question + roll + move) is fully finished. */
+  completeTurn() {
+    this.turnsTaken += 1;
     this.notifyUpdate();
   }
 
