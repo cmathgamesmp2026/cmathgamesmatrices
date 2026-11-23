@@ -86,7 +86,7 @@ export class Fraction {
       return new Fraction(Math.round(val), 1);
     }
     if (typeof val === 'string') {
-      const trimmed = val.trim();
+      const trimmed = val.trim().replace(/[\u2212\u2013]/g, "-");
       if (trimmed.includes('/')) {
         const parts = trimmed.split('/');
         const n = parseInt(parts[0].trim(), 10);
@@ -368,35 +368,37 @@ export const SYLLABUS_TOPICS = [
   'Application problems'
 ];
 
-export const FORBIDDEN_KEYWORDS = [
-  'eigen',
-  'eigenvalue',
-  'eigenvector',
-  'dot product',
-  'cross product',
-  'gaussian elimination',
-  'gauss-jordan',
-  'cramer',
-  'rank',
-  'lu decomposition',
-  'cholesky',
-  'qr decomposition',
-  'vector space',
-  'collinear',
-  'magnitude of vector',
-  'angle between'
+export const FORBIDDEN_PATTERNS = [
+  /\beigen\w*/i,
+  /\bdot product\b/i,
+  /\bcross product\b/i,
+  /\bgauss\w*/i,
+  /\bcramer/i,
+  /\brank\b/i,
+  /\b(lu|qr) (decomposition|factori[sz]ation)\b/i,
+  /\bcholesky\b/i,
+  /\bdecomposition\b/i,
+  /\bvector space\b/i,
+  /\bcollinear\w*/i,
+  /\bparallel vectors?\b/i,
+  /\bmagnitude of (a )?vector\b/i,
+  /\bangle between\b/i,
+  /\brow[- ]reduc\w*/i,
+  /\bmatrix (power|exponential)\w*/i,
+  /\bcomplex numbers?\b/i,
+  /\b(derivative|integral|calculus)\b/i
 ];
 
+// Kept for compatibility with older imports.
+export const FORBIDDEN_KEYWORDS = FORBIDDEN_PATTERNS.map((p) => p.source);
+
 /**
- * Check if the text or topic contains strictly forbidden out-of-syllabus terms
+ * Check if the text contains strictly forbidden out-of-syllabus terms
+ * (word-boundary matching, so "ranking" or "frank" are not flagged).
  */
 export function isOutOfSyllabus(text) {
   if (!text || typeof text !== 'string') return false;
-  const lower = text.toLowerCase();
-  for (const kw of FORBIDDEN_KEYWORDS) {
-    if (lower.includes(kw)) return true;
-  }
-  return false;
+  return FORBIDDEN_PATTERNS.some((re) => re.test(text));
 }
 
 /**
@@ -441,7 +443,7 @@ export function parseOptionValue(option) {
   }
 
   if (typeof option === 'string') {
-    const trimmed = option.trim();
+    const trimmed = option.trim().replace(/[\u2212\u2013]/g, "-");
 
     // Check for JSON-encoded matrix
     if (trimmed.startsWith('[[') || trimmed.startsWith('[ [')) {
@@ -536,12 +538,164 @@ export function compareValues(valA, valB) {
 }
 
 /**
- * Main verification function
- * Validates syllabus constraints and independently computes answer for computational types.
+ * Main verification function for a single question (old shape: { topic, type, question,
+ * matrices, options, correctIndex }). Recomputes the answer with exact fractions.
  *
- * @param {Object} questionData - The question object from Gemini
  * @returns {{ valid: boolean, reason?: string, computedAnswer?: any }}
  */
+
+export const ALLOWED_TYPES = [
+  'add', 'sub', 'scalar', 'multiply', 'transpose', 'determinant', 'inverse',
+  'solve_system', 'conformability', 'properties', 'application', 'concept'
+];
+
+/** Matrix data every computational type must supply, so nothing is silently skipped. */
+const REQUIRED_MATRICES = {
+  add: ['A', 'B'],
+  sub: ['A', 'B'],
+  scalar: ['A', 'k'],
+  multiply: ['A', 'B'],
+  transpose: ['A'],
+  determinant: ['A'],
+  inverse: ['A'],
+  solve_system: ['A', 'b'],
+  conformability: ['A', 'B']
+};
+
+const TYPE_LABELS = {
+  add: 'Addition',
+  sub: 'Subtraction',
+  scalar: 'Scalar multiplication',
+  multiply: 'Matrix multiplication',
+  transpose: 'Transpose',
+  determinant: 'Determinant',
+  inverse: 'Inverse',
+  solve_system: 'System solution',
+  conformability: 'Conformability'
+};
+
+const NEGATED_RE = /not\s+conformable|non-?\s?conformable|undefined|not\s+defined|cannot|can't|impossible|not\s+possible/i;
+const SINGULAR_RE = /singular|no inverse|does not exist|doesn't exist|not invertible|non-?invertible|undefined/i;
+
+/**
+ * Independently compute the expected answer for a computational type.
+ * @returns {{ok:false, reason:string} | {ok:true, kind:string, value?:any}}
+ *   kind: 'none' (nothing to compute) | 'matrix' | 'fraction' | 'vector' | 'singular' |
+ *         'nonConformable' | 'conformability'
+ */
+export function computeExpected(type, matrices, text = '') {
+  const need = REQUIRED_MATRICES[type];
+  if (!need) return { ok: true, kind: 'none' };
+
+  for (const key of need) {
+    if (!matrices || matrices[key] === undefined || matrices[key] === null) {
+      return { ok: false, reason: `Type "${type}" requires matrices.${key}` };
+    }
+  }
+
+  try {
+    const A = Matrix.from(matrices.A);
+
+    switch (type) {
+      case 'add':
+        return { ok: true, kind: 'matrix', value: A.add(Matrix.from(matrices.B)) };
+      case 'sub':
+        return { ok: true, kind: 'matrix', value: A.sub(Matrix.from(matrices.B)) };
+      case 'scalar': {
+        let value = A.scalarMul(Fraction.from(matrices.k));
+        if (matrices.B !== undefined && matrices.B !== null) {
+          const k2 = matrices.k2 !== undefined && matrices.k2 !== null ? Fraction.from(matrices.k2) : new Fraction(1);
+          const term = Matrix.from(matrices.B).scalarMul(k2);
+          const isSub = matrices.op === '-' || matrices.op === '\u2212';
+          value = isSub ? value.sub(term) : value.add(term);
+        }
+        return { ok: true, kind: 'matrix', value };
+      }
+      case 'multiply': {
+        const B = Matrix.from(matrices.B);
+        if (A.cols !== B.rows) return { ok: true, kind: 'nonConformable' };
+        return { ok: true, kind: 'matrix', value: A.multiply(B) };
+      }
+      case 'transpose':
+        return { ok: true, kind: 'matrix', value: A.transpose() };
+      case 'determinant':
+        return { ok: true, kind: 'fraction', value: A.determinant() };
+      case 'inverse': {
+        const inv = A.inverse();
+        if (inv === null) return { ok: true, kind: 'singular' };
+        return { ok: true, kind: 'matrix', value: inv };
+      }
+      case 'solve_system': {
+        const b = Matrix.from(Array.isArray(matrices.b[0]) ? matrices.b : matrices.b.map((x) => [x]));
+        if (A.rows !== A.cols || A.rows !== b.rows) {
+          return { ok: false, reason: 'System dimensions do not match (A must be square, b must have one entry per row)' };
+        }
+        const inv = A.inverse();
+        if (inv === null) return { ok: false, reason: 'System matrix A is singular (no unique solution)' };
+        const X = inv.multiply(b);
+        return { ok: true, kind: 'vector', value: X.data.map((r) => r[0]), matrix: X };
+      }
+      case 'conformability': {
+        const B = Matrix.from(matrices.B);
+        const t = String(text);
+        if (/multipl|product|\bAB\b|\bBA\b/i.test(t)) {
+          const swap = /\bBA\b/.test(t) && !/\bAB\b/.test(t);
+          const [L, R] = swap ? [B, A] : [A, B];
+          const conformable = L.cols === R.rows;
+          return { ok: true, kind: 'conformability', conformable, size: conformable ? [L.rows, R.cols] : null };
+        }
+        if (/\badd|\bsum\b|subtract|difference|A\s*[+\-\u2212]\s*B/i.test(t)) {
+          const conformable = A.rows === B.rows && A.cols === B.cols;
+          return { ok: true, kind: 'conformability', conformable, size: conformable ? [A.rows, A.cols] : null };
+        }
+        return { ok: false, reason: 'Conformability question must say whether it is about multiplying AB or adding A and B' };
+      }
+      default:
+        return { ok: true, kind: 'none' };
+    }
+  } catch (err) {
+    return { ok: false, reason: `Math evaluation error: ${err.message}` };
+  }
+}
+
+function describeExpected(exp) {
+  if (exp.kind === 'matrix') return JSON.stringify(exp.value.toDisplayArray());
+  if (exp.kind === 'fraction') return exp.value.toString();
+  if (exp.kind === 'vector') return exp.value.map((f) => f.toString()).join(', ');
+  if (exp.kind === 'conformability') return exp.conformable ? `conformable, size ${exp.size.join('x')}` : 'not conformable';
+  return exp.kind;
+}
+
+/** Does an answer option (or lesson result) agree with the independently computed answer? */
+export function claimMatches(exp, option) {
+  const text = String(option).replace(/[\u2212\u2013]/g, '-');
+  switch (exp.kind) {
+    case 'none':
+      return true;
+    case 'matrix':
+    case 'fraction':
+      return compareValues(parseOptionValue(option), exp.value);
+    case 'vector': {
+      const parsed = parseOptionValue(option);
+      return compareValues(parsed, exp.value) || compareValues(parsed, exp.matrix);
+    }
+    case 'singular':
+      return SINGULAR_RE.test(text);
+    case 'nonConformable':
+      return NEGATED_RE.test(text);
+    case 'conformability': {
+      const negated = NEGATED_RE.test(text);
+      if (!exp.conformable) return negated;
+      if (negated) return false;
+      const size = text.match(/(\d+)\s*[x\u00d7*]\s*(\d+)/i);
+      if (size && (Number(size[1]) !== exp.size[0] || Number(size[2]) !== exp.size[1])) return false;
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
 export function verifyQuestion(questionData) {
   if (!questionData || typeof questionData !== 'object') {
     return { valid: false, reason: 'Question data is null or not an object' };
@@ -549,24 +703,26 @@ export function verifyQuestion(questionData) {
 
   const { topic, type, question, matrices, options, correctIndex } = questionData;
 
-  // 1. Check basic structure
+  // 1. Basic structure
   if (!question || typeof question !== 'string') {
     return { valid: false, reason: 'Missing question text' };
+  }
+  if (!ALLOWED_TYPES.includes(type)) {
+    return { valid: false, reason: `Unknown question type: ${type}` };
   }
   if (!Array.isArray(options) || options.length !== 4) {
     return { valid: false, reason: `Must have exactly 4 options, found ${options?.length}` };
   }
-  if (typeof correctIndex !== 'number' || correctIndex < 0 || correctIndex > 3) {
+  if (!Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex > 3) {
     return { valid: false, reason: `Invalid correctIndex: ${correctIndex}` };
   }
 
-  // Check that options are distinct
   const uniqueOptions = new Set(options.map((o) => (typeof o === 'object' ? JSON.stringify(o) : String(o).trim())));
   if (uniqueOptions.size < 4) {
     return { valid: false, reason: 'Options must be 4 distinct choices' };
   }
 
-  // 2. Syllabus validation
+  // 2. Syllabus
   if (!validateTopic(topic)) {
     return { valid: false, reason: `Topic "${topic}" is not in syllabus` };
   }
@@ -574,136 +730,168 @@ export function verifyQuestion(questionData) {
     return { valid: false, reason: 'Question or topic contains forbidden out-of-syllabus concepts' };
   }
 
-  // 3. Computational verification
-  const claimedOption = options[correctIndex];
-  const parsedClaimed = parseOptionValue(claimedOption);
+  // 3. Independent recomputation
+  const exp = computeExpected(type, matrices, question);
+  if (!exp.ok) return { valid: false, reason: exp.reason };
+  if (exp.kind === 'none') return { valid: true, computedAnswer: null };
 
-  try {
-    let computed = null;
-
-    if (type === 'add' && matrices?.A && matrices?.B) {
-      const A = Matrix.from(matrices.A);
-      const B = Matrix.from(matrices.B);
-      computed = A.add(B);
-      if (!compareValues(parsedClaimed, computed)) {
-        return { valid: false, reason: `Addition mismatch: computed ${JSON.stringify(computed.toDisplayArray())}` };
-      }
-    } else if (type === 'sub' && matrices?.A && matrices?.B) {
-      const A = Matrix.from(matrices.A);
-      const B = Matrix.from(matrices.B);
-      computed = A.sub(B);
-      if (!compareValues(parsedClaimed, computed)) {
-        return { valid: false, reason: `Subtraction mismatch: computed ${JSON.stringify(computed.toDisplayArray())}` };
-      }
-    } else if (type === 'scalar' && matrices?.A) {
-      const A = Matrix.from(matrices.A);
-      // Check if scalar k or expression is given
-      let k = matrices.k != null ? Fraction.from(matrices.k) : null;
-      if (!k) {
-        // Try to parse scalar factor from question text e.g. "Find 3A", "-2A", "2D - 3C", "2I + C"
-        const multMatch = question.match(/([+-]?\d+)\s*(?:A|C|D|M)/);
-        if (multMatch) {
-          k = Fraction.from(parseInt(multMatch[1], 10));
-        } else {
-          k = new Fraction(2); // default scalar
-        }
-      }
-
-      // Check if expression involves 2 matrices: k*A + c*B or k*I + A
-      if (matrices.B && (question.includes('-') || question.includes('+'))) {
-        const B = Matrix.from(matrices.B);
-        const matchC = question.match(/([+-]?\d+)\s*B/i) || question.match(/([+-]?\d+)\s*C/i);
-        const cVal = matchC ? Fraction.from(parseInt(matchC[1], 10)) : new Fraction(1);
-        const isSub = question.includes('-');
-        computed = isSub ? A.scalarMul(k).sub(B.scalarMul(cVal)) : A.scalarMul(k).add(B.scalarMul(cVal));
-      } else if (question.includes('I') && matrices.A) {
-        const I = Matrix.identity(A.rows);
-        computed = I.scalarMul(k).add(A);
-      } else {
-        computed = A.scalarMul(k);
-      }
-
-      if (!compareValues(parsedClaimed, computed)) {
-        return { valid: false, reason: `Scalar multiplication mismatch: computed ${JSON.stringify(computed.toDisplayArray())}` };
-      }
-    } else if (type === 'multiply' && matrices?.A && matrices?.B) {
-      const A = Matrix.from(matrices.A);
-      const B = Matrix.from(matrices.B);
-      if (A.cols !== B.rows) {
-        // Non-conformable
-        const nonConfKeywords = ['not conformable', 'non-conformable', 'undefined', 'cannot be multiplied'];
-        const claimStr = String(claimedOption).toLowerCase();
-        if (!nonConfKeywords.some((kw) => claimStr.includes(kw))) {
-          return { valid: false, reason: 'Expected non-conformable multiplication result' };
-        }
-      } else {
-        computed = A.multiply(B);
-        if (!compareValues(parsedClaimed, computed)) {
-          return { valid: false, reason: `Matrix multiplication mismatch: computed ${JSON.stringify(computed.toDisplayArray())}` };
-        }
-      }
-    } else if (type === 'transpose' && matrices?.A) {
-      const A = Matrix.from(matrices.A);
-      computed = A.transpose();
-      if (!compareValues(parsedClaimed, computed)) {
-        return { valid: false, reason: `Transpose mismatch: computed ${JSON.stringify(computed.toDisplayArray())}` };
-      }
-    } else if (type === 'determinant' && matrices?.A) {
-      const A = Matrix.from(matrices.A);
-      computed = A.determinant();
-      if (!compareValues(parsedClaimed, computed)) {
-        return { valid: false, reason: `Determinant mismatch: computed ${computed.toString()}` };
-      }
-    } else if (type === 'inverse' && matrices?.A) {
-      const A = Matrix.from(matrices.A);
-      computed = A.inverse();
-      if (computed === null) {
-        // Singular
-        const singKeywords = ['singular', 'no inverse', 'does not exist', 'undefined'];
-        const claimStr = String(claimedOption).toLowerCase();
-        if (!singKeywords.some((kw) => claimStr.includes(kw))) {
-          return { valid: false, reason: 'Expected singular / no inverse result' };
-        }
-      } else {
-        if (!compareValues(parsedClaimed, computed)) {
-          return { valid: false, reason: `Inverse mismatch: computed ${JSON.stringify(computed.toDisplayArray())}` };
-        }
-      }
-    } else if (type === 'solve_system' && matrices?.A && matrices?.b) {
-      const A = Matrix.from(matrices.A);
-      const bData = Array.isArray(matrices.b[0]) ? matrices.b : matrices.b.map((x) => [x]);
-      const b = Matrix.from(bData);
-      const invA = A.inverse();
-      if (invA) {
-        const X = invA.multiply(b);
-        // Column vector of fractions
-        const solFractions = X.data.map((r) => r[0]);
-        if (!compareValues(parsedClaimed, solFractions) && !compareValues(parsedClaimed, X)) {
-          return { valid: false, reason: `System solution mismatch: computed ${JSON.stringify(solFractions.map((f) => f.toString()))}` };
-        }
-      }
-    } else if (type === 'conformability' && matrices?.A && matrices?.B) {
-      const A = Matrix.from(matrices.A);
-      const B = Matrix.from(matrices.B);
-      const isMul = question.toLowerCase().includes('multipl') || question.toLowerCase().includes('ab');
-      const claimStr = String(claimedOption).toLowerCase();
-      if (isMul) {
-        const conformable = A.cols === B.rows;
-        if (conformable) {
-          const expectedSize = `${A.rows}x${B.cols}`;
-          if (!claimStr.includes('conformable') && !claimStr.includes(expectedSize)) {
-            return { valid: false, reason: `Expected conformable product of size ${expectedSize}` };
-          }
-        } else {
-          if (!claimStr.includes('not conformable') && !claimStr.includes('non-conformable') && !claimStr.includes('undefined')) {
-            return { valid: false, reason: 'Expected non-conformable result for multiplication' };
-          }
-        }
-      }
-    }
-
-    return { valid: true, computedAnswer: computed };
-  } catch (err) {
-    return { valid: false, reason: `Math evaluation error: ${err.message}` };
+  if (!claimMatches(exp, options[correctIndex])) {
+    return {
+      valid: false,
+      reason: `${TYPE_LABELS[type] || type} mismatch: computed ${describeExpected(exp)}`
+    };
   }
+
+  // Exactly ONE option may be correct (a distractor must not also be right).
+  const matching = options.filter((o) => claimMatches(exp, o)).length;
+  if (matching !== 1) {
+    return { valid: false, reason: `${matching} options match the computed answer (expected exactly 1)` };
+  }
+
+  return { valid: true, computedAnswer: exp.value ?? null };
+}
+
+/** Recompute a lesson's worked example and compare with its stated result. */
+export function verifyLessonExample(example) {
+  if (!example || typeof example !== 'object') {
+    return { valid: false, reason: 'Lesson example missing' };
+  }
+  if (!ALLOWED_TYPES.includes(example.type)) {
+    return { valid: false, reason: `Lesson example has unknown type: ${example.type}` };
+  }
+  const exp = computeExpected(example.type, example.matrices, example.description || '');
+  if (!exp.ok) return { valid: false, reason: `Lesson example: ${exp.reason}` };
+  if (exp.kind === 'none') return { valid: true };
+  if (!claimMatches(exp, example.result)) {
+    return {
+      valid: false,
+      reason: `Lesson example result mismatch: computed ${describeExpected(exp)}, lesson says ${JSON.stringify(example.result)}`
+    };
+  }
+  return { valid: true };
+}
+
+function collectStrings(value, out = []) {
+  if (typeof value === 'string') out.push(value);
+  else if (Array.isArray(value)) value.forEach((v) => collectStrings(v, out));
+  else if (value && typeof value === 'object') Object.values(value).forEach((v) => collectStrings(v, out));
+  return out;
+}
+
+function canonValue(v) {
+  if (v === undefined || v === null) return null;
+  try {
+    if (Array.isArray(v)) return Matrix.from(v).toDisplayArray();
+    return Fraction.from(v).toString();
+  } catch {
+    return String(v);
+  }
+}
+
+function matricesKey(m) {
+  if (!m || typeof m !== 'object') return null;
+  return JSON.stringify(['A', 'B', 'b', 'k', 'k2', 'op'].map((k) => canonValue(m[k])));
+}
+
+function oversizeMatrix(m) {
+  if (!m || typeof m !== 'object') return null;
+  for (const [key, v] of Object.entries(m)) {
+    if (!Array.isArray(v)) continue;
+    const rows = v.length;
+    const cols = Array.isArray(v[0]) ? v[0].length : 1;
+    if (rows > 3 || cols > 3) return `matrices.${key} is ${rows}x${cols} (larger than 3x3 is out of syllabus)`;
+  }
+  return null;
+}
+
+/**
+ * Verify a whole turn (lesson + question). Nothing is shown until this passes.
+ *   1. the question's correct answer matches the option at correctIndex (and only that option)
+ *   2. the lesson example's stated result matches the recomputed value
+ *   3. valid shape, topic is one of the 10 (and the assigned one), 4 distinct options
+ *   4. the question's matrices differ from the lesson example's matrices
+ *
+ * @param {object} turn   { topic, lesson, question }
+ * @param {{ number: number, name: string } | null} expectedTopic  topic the server assigned
+ */
+export function verifyTurn(turn, expectedTopic = null) {
+  const fail = (reason) => ({ valid: false, reason });
+
+  if (!turn || typeof turn !== 'object') return fail('Response is not a JSON object');
+  const { lesson, question } = turn;
+  if (!lesson || typeof lesson !== 'object') return fail('Missing lesson');
+  if (!question || typeof question !== 'object') return fail('Missing question');
+
+  if (typeof lesson.title !== 'string' || !lesson.title.trim()) return fail('Lesson has no title');
+  if (
+    !Array.isArray(lesson.keyPoints) ||
+    lesson.keyPoints.length < 2 ||
+    lesson.keyPoints.length > 4 ||
+    lesson.keyPoints.some((p) => typeof p !== 'string' || !p.trim())
+  ) {
+    return fail('Lesson needs 2 to 4 non-empty key points');
+  }
+  const words = lesson.keyPoints.join(' ').split(/\s+/).length;
+  if (words > 150) return fail(`Lesson key points are too long (${words} words)`);
+
+  const ex = lesson.example;
+  if (!ex || typeof ex !== 'object') return fail('Lesson has no worked example');
+  if (!Array.isArray(ex.steps) || ex.steps.length === 0) return fail('Lesson example has no steps');
+  if (ex.result === undefined || ex.result === null) return fail('Lesson example has no result');
+  if (typeof question.text !== 'string' || !question.text.trim()) return fail('Question has no text');
+
+  // Topic must be one of the 10 and the one the server assigned
+  const topicText = String(turn.topic ?? '');
+  if (expectedTopic) {
+    const num = parseInt((topicText.match(/^\s*(\d+)/) || [])[1], 10);
+    const nameOk = topicText.toLowerCase().includes(expectedTopic.name.toLowerCase());
+    if (num !== expectedTopic.number && !nameOk) {
+      return fail(`Topic mismatch: expected "${expectedTopic.number}. ${expectedTopic.name}", got "${topicText}"`);
+    }
+  } else if (!validateTopic(topicText)) {
+    return fail(`Topic "${topicText}" is not in syllabus`);
+  }
+  const topicName = expectedTopic ? expectedTopic.name : topicText;
+
+  // Out-of-syllabus content anywhere in the lesson or question
+  for (const s of collectStrings({ lesson, question })) {
+    if (isOutOfSyllabus(s)) return fail(`Out-of-syllabus content: "${s.slice(0, 60)}"`);
+  }
+
+  // Nothing bigger than 3x3
+  const big = oversizeMatrix(ex.matrices) || oversizeMatrix(question.matrices);
+  if (big) return fail(big);
+
+  // Application topics must not default to muffins and coffee
+  if (expectedTopic && (expectedTopic.number === 9 || expectedTopic.number === 10)) {
+    const all = collectStrings({ lesson, question }).join(' ');
+    if (/\bmuffins?\b|\bcoffee\b/i.test(all)) return fail('Application context defaulted to muffins/coffee');
+  }
+
+  // 1 + 3. Question: exactly one correct answer, matches the recomputed value
+  const q = verifyQuestion({
+    topic: topicName,
+    type: question.type,
+    question: question.text,
+    matrices: question.matrices,
+    options: question.options,
+    correctIndex: question.correctIndex
+  });
+  if (!q.valid) return fail(`Question: ${q.reason}`);
+
+  // 2. Lesson example is recomputed, so the lesson never teaches a wrong answer
+  const l = verifyLessonExample(ex);
+  if (!l.valid) return fail(l.reason);
+
+  // 4. The question must not reuse the lesson example's numbers
+  if (ex.matrices && question.matrices) {
+    const sameAll = matricesKey(ex.matrices) === matricesKey(question.matrices);
+    const sameA =
+      ex.matrices.A !== undefined &&
+      question.matrices.A !== undefined &&
+      JSON.stringify(canonValue(ex.matrices.A)) === JSON.stringify(canonValue(question.matrices.A));
+    if (sameAll || sameA) return fail('Question uses the same matrices as the lesson example');
+  }
+
+  return { valid: true };
 }

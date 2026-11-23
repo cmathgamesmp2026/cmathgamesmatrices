@@ -1235,3 +1235,9 @@ select:focus {
   color: var(--text-muted);
 }
 
+
+.peek-btn {
+  margin-bottom: 12px;
+  padding: 6px 12px;
+  font-size: 13px;
+}

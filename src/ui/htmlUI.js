@@ -9,11 +9,18 @@ import { gameState } from '../game/gameState.js';
 import { rollDice } from '../game/diceLogic.js';
 import { resolveTurnMovement } from '../game/boardLogic.js';
 import { TurnMachine, TURN_STATES } from '../game/turnMachine.js';
-import { nextPlaceholderContent, resetPlaceholderContent } from '../game/placeholderContent.js';
 import { renderOptionContent, renderMatricesSection } from './matrixRenderer.js';
 
-// Stage 1: lessons and questions are placeholders. Stage 2 turns this off and uses Gemini.
-const USE_PLACEHOLDER_CONTENT = true;
+// Optional "Peek at lesson" button during the test (off by default).
+const ALLOW_PEEK = false;
+
+/** Error from loading a lesson, carrying the HTTP status (429 = quota, never retried). */
+class TurnLoadError extends Error {
+  constructor(message, status = 0) {
+    super(message);
+    this.status = status;
+  }
+}
 
 export const TOKEN_ICONS = {
   car: '🏎️',
@@ -64,6 +71,7 @@ export class HTMLUI {
       lessonExampleSteps: document.getElementById('lesson-example-steps'),
       lessonExampleResult: document.getElementById('lesson-example-result'),
       readyBtn: document.getElementById('ready-btn'),
+      peekBtn: document.getElementById('peek-btn'),
       rollBtn: document.getElementById('roll-btn'),
       rollHint: document.getElementById('roll-hint'),
       questionContainer: document.getElementById('question-container'),
@@ -101,6 +109,8 @@ export class HTMLUI {
     this.machine = new TurnMachine();
     this.currentContent = null;
     this.loadId = 0;
+    this.gameId = null;
+    this.prefetch = null;
 
     this.initEventListeners();
     this.initBusListeners();
@@ -145,6 +155,10 @@ export class HTMLUI {
 
     // Turn flow controls
     this.elements.readyBtn.addEventListener('click', () => this.handleReady());
+    if (ALLOW_PEEK) {
+      this.elements.peekBtn.classList.remove('hidden');
+      this.elements.peekBtn.addEventListener('click', () => this.handlePeek());
+    }
     this.elements.rollBtn.addEventListener('click', () => this.handleRoll());
     document.addEventListener('keydown', (e) => this.handleKeydown(e));
 
@@ -200,7 +214,8 @@ export class HTMLUI {
 
     // Fetch the first lesson (the first turn always begins at LEARN)
     this.machine.reset();
-    resetPlaceholderContent();
+    this.gameId = crypto.randomUUID();
+    this.prefetch = null;
     this.beginTurn();
   }
 
@@ -238,15 +253,68 @@ export class HTMLUI {
   // The TurnMachine decides what is allowed; the UI only reflects it.
   // ---------------------------------------------------------------------
 
-  /**
-   * Returns the lesson + question for the current turn.
-   * Stage 1 uses placeholder content; Stage 2 swaps in the Gemini endpoint.
-   */
-  async getTurnContent() {
-    if (USE_PLACEHOLDER_CONTENT) {
-      return nextPlaceholderContent();
+  /** One request returns both the lesson and its test question (verified on the server). */
+  async fetchTurn(turn, difficulty) {
+    let res;
+    try {
+      res = await fetch('/api/question', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gameId: this.gameId, turn, difficulty })
+      });
+    } catch {
+      throw new TurnLoadError('Cannot reach the game server. Check your connection and try again.', 0);
     }
-    throw new Error('The lesson service is not connected yet.');
+
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      // non-JSON error page: fall through to the generic message
+    }
+    if (res.ok && data && data.success && data.content) return data.content;
+
+    const message =
+      res.status === 429
+        ? 'The question service is busy, please try again soon.'
+        : (data && data.error) || 'Could not load the lesson. Please try again.';
+    throw new TurnLoadError(message, res.status);
+  }
+
+  /** Lesson + question for the current turn: uses the prefetched one if it is ready and still valid. */
+  async getTurnContent() {
+    const turn = gameState.turnsTaken + 1;
+    const difficulty = gameState.difficulty;
+    const pre = this.prefetch;
+    this.prefetch = null;
+
+    if (pre && pre.gameId === this.gameId && pre.turn === turn && pre.difficulty === difficulty) {
+      try {
+        return await pre.promise;
+      } catch (err) {
+        // A 429 is never retried; anything else gets one live request.
+        if (err.status === 429) throw err;
+      }
+    }
+    return this.fetchTurn(turn, difficulty);
+  }
+
+  /** While the player rolls and moves, fetch the next turn's lesson + question in the background. */
+  startPrefetch() {
+    const turn = gameState.turnsTaken + 2; // the turn after the one in progress
+    const difficulty = gameState.difficulty;
+    const promise = this.fetchTurn(turn, difficulty);
+    promise.catch(() => {}); // a failed prefetch is handled when the turn actually needs it
+    this.prefetch = { gameId: this.gameId, turn, difficulty, promise };
+  }
+
+  /** Optional peek at the lesson during the test (only if ALLOW_PEEK). */
+  handlePeek() {
+    if (!ALLOW_PEEK || this.machine.state !== TURN_STATES.TEST) return;
+    const el = this.elements;
+    const showing = !el.lessonContainer.classList.contains('hidden');
+    el.lessonContainer.classList.toggle('hidden', showing);
+    el.readyBtn.classList.add('hidden');
   }
 
   /** Show the lesson card for a new turn (the machine is already in LEARN). */
@@ -334,6 +402,7 @@ export class HTMLUI {
     el.lessonTopic.textContent = parsed.name;
     el.lessonTopicCount.textContent = parsed.number ? `Topic ${parsed.number} of 10` : '';
     el.lessonTitle.textContent = lesson.title;
+    el.readyBtn.classList.remove('hidden');
 
     el.lessonKeyPoints.innerHTML = '';
     lesson.keyPoints.forEach((point) => {
@@ -415,6 +484,7 @@ export class HTMLUI {
     if (!this.machine.submitAnswer(selectedIndex, isCorrect)) return;
 
     // Lock options & highlight results
+    this.elements.lessonContainer.classList.add('hidden'); // closes a peek, if one was open
     this.elements.optionsGrid.querySelectorAll('.option-card').forEach((btn, idx) => {
       btn.disabled = true;
       if (idx === q.correctIndex) btn.classList.add('correct');
@@ -465,6 +535,7 @@ export class HTMLUI {
       'action-banner active'
     );
     this.syncTurnUI();
+    this.startPrefetch(); // fetch the next lesson + question while the player rolls and moves
 
     // Listen once for dice animation complete, then trigger token movement
     events.once(EVENTS.DICE_ANIMATION_COMPLETE, () => {

@@ -2,7 +2,6 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { TurnMachine, TURN_STATES } from '../src/game/turnMachine.js';
 import { gameState } from '../src/game/gameState.js';
-import { nextPlaceholderContent, resetPlaceholderContent } from '../src/game/placeholderContent.js';
 
 describe('Turn state machine', () => {
   it('starts in LEARN at step 1', () => {
@@ -82,20 +81,5 @@ describe('Game start and turn counting', () => {
     assert.strictEqual(gameState.correctAnswers, 1);
     gameState.completeTurn();
     assert.strictEqual(gameState.turnsTaken, 1);
-  });
-});
-
-describe('Stage 1 placeholder content', () => {
-  it('has a matching topic, 4 distinct options and a valid correctIndex', () => {
-    resetPlaceholderContent();
-    for (let i = 0; i < 3; i++) {
-      const c = nextPlaceholderContent();
-      assert.match(c.topic, /^\d+\./);
-      assert.strictEqual(c.question.options.length, 4);
-      const unique = new Set(c.question.options.map((o) => JSON.stringify(o)));
-      assert.strictEqual(unique.size, 4);
-      assert.ok(c.question.correctIndex >= 0 && c.question.correctIndex < 4);
-      assert.notDeepStrictEqual(c.question.matrices, c.lesson.example.matrices);
-    }
   });
 });

@@ -3,6 +3,16 @@
  * Formats 2D arrays, vectors, and fractions into clean bracketed mathematical structures.
  */
 
+/** Escape text coming from the AI before it goes into innerHTML. */
+export function escapeHTML(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /**
  * Format a fraction or number value into clean HTML.
  * Renders neat fractions with horizontal bar or clean integer.
@@ -30,7 +40,7 @@ export function formatValueHTML(val) {
     }
   }
 
-  return `<span class="math-num">${str}</span>`;
+  return `<span class="math-num">${escapeHTML(str)}</span>`;
 }
 
 /**
@@ -126,7 +136,7 @@ export function renderOptionContent(option) {
 
     // 4. If it's a system solution like "x = 2, y = -1"
     if (/x\s*=.*y\s*=/i.test(trimmed)) {
-      return `<div class="math-solution-text">${trimmed.replace(/(x|y|z)/gi, '<strong class="math-var">$1</strong>')}</div>`;
+      return `<div class="math-solution-text">${escapeHTML(trimmed).replace(/(x|y|z)/gi, '<strong class="math-var">$1</strong>')}</div>`;
     }
 
     // 5. If it's a simple fraction or number
@@ -136,7 +146,7 @@ export function renderOptionContent(option) {
   }
 
   // Regular text
-  return `<span class="option-text">${option}</span>`;
+  return `<span class="option-text">${escapeHTML(option)}</span>`;
 }
 
 /**

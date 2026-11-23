@@ -1,53 +1,54 @@
 import express from 'express';
-import { generateQuestion } from '../services/gemini.js';
+import { generateTurn, ServiceError } from '../services/gemini.js';
+import {
+  getSession,
+  assignTurn,
+  isValidGameId,
+  isDuplicateQuestion,
+  recordQuestion
+} from '../services/gameSession.js';
 
 const router = express.Router();
 
 /**
- * GET /api/question
- * Generate a single matrices question using Gemini live
- */
-router.get('/', async (req, res) => {
-  try {
-    const difficulty = req.query.difficulty === 'Hard' ? 'Hard' : 'Easy';
-    const previousTopic = req.query.previousTopic ? String(req.query.previousTopic) : null;
-    let usedQuestions = [];
-    if (req.query.usedQuestions) {
-      try {
-        usedQuestions = JSON.parse(req.query.usedQuestions);
-      } catch {
-        usedQuestions = [];
-      }
-    }
-
-    const question = await generateQuestion({ difficulty, previousTopic, usedQuestions });
-    res.json({ success: true, question });
-  } catch (err) {
-    console.error('[API /question Error]:', err.message);
-    res.status(500).json({
-      success: false,
-      error: err.message || 'Failed to generate question. Please try again.'
-    });
-  }
-});
-
-/**
  * POST /api/question
- * Also support POST with JSON body for easier passing of usedQuestions array
+ * Body: { gameId, turn, difficulty }
+ * One request returns BOTH the lesson and its test question for that turn:
+ *   { success: true, content: { topic, topicNumber, lesson, question } }
+ *
+ * The server picks the topic (shuffled order, no repeat until all 10 are used),
+ * so asking again for the same turn (retry, difficulty change) keeps the same topic.
  */
 router.post('/', async (req, res) => {
-  try {
-    const difficulty = req.body.difficulty === 'Hard' ? 'Hard' : 'Easy';
-    const previousTopic = req.body.previousTopic || null;
-    const usedQuestions = Array.isArray(req.body.usedQuestions) ? req.body.usedQuestions : [];
+  const { gameId, turn, difficulty } = req.body || {};
 
-    const question = await generateQuestion({ difficulty, previousTopic, usedQuestions });
-    res.json({ success: true, question });
+  if (!isValidGameId(gameId)) {
+    return res.status(400).json({ success: false, error: 'A valid gameId is required.' });
+  }
+  if (!Number.isInteger(turn) || turn < 1 || turn > 500) {
+    return res.status(400).json({ success: false, error: 'A valid turn number is required.' });
+  }
+
+  try {
+    const session = getSession(gameId);
+    const assignment = assignTurn(session, turn);
+
+    const content = await generateTurn({
+      assignment,
+      difficulty: difficulty === 'Hard' ? 'Hard' : 'Easy',
+      avoidQuestions: session.recentQuestions,
+      isDuplicate: (question) => isDuplicateQuestion(session, question)
+    });
+
+    recordQuestion(session, content.question);
+    res.json({ success: true, content });
   } catch (err) {
     console.error('[API /question Error]:', err.message);
-    res.status(500).json({
+    const status = err instanceof ServiceError ? err.status : 500;
+    res.status(status).json({
       success: false,
-      error: err.message || 'Failed to generate question. Please try again.'
+      code: err instanceof ServiceError ? err.code : 'ERROR',
+      error: err instanceof ServiceError ? err.message : 'Something went wrong preparing the lesson.'
     });
   }
 });
