@@ -66,14 +66,38 @@ Vectors (dot product, collinearity, parallel vectors, magnitude, angle between v
 
 ### LESSON RULES
 - Plain friendly language. 2 to 4 short key points, about 80 words in total. Define each term the first time you use it.
-- ONE worked example with small integers and clear steps. The example has its own "type" (same list and conventions as above), its own "matrices", numbered "steps", and a "result" written in the same format as an answer option would be.
+- ONE worked example with small integers and clear steps. The example has its own "type" (same list and conventions as above), its own "matrices", "steps" (following the step rules below), and a "result" written in the same format as an answer option would be.
 - The lesson must NOT contain the answer to the test question.
 
 ### QUESTION RULES
 - Same topic as the lesson. The question MUST use different numbers from the lesson example (different matrices, and for application problems a different real-world context).
 - Exactly 4 distinct options and exactly ONE correct answer. The 3 wrong options are plausible mistakes: forgetting to swap or negate in the adjugate, multiplying in the wrong order, adding instead of multiplying, sign errors in the determinant, forgetting to scale every entry.
-- "correctIndex" is the index (0 to 3) of the correct option. "explanation" is a short step-by-step working.
+- "correctIndex" is the index (0 to 3) of the correct option.
 - Use small realistic whole-number prices and quantities in application problems.
+
+### STEP-BY-STEP WORKING RULES (for both question.explanation and lesson.example.steps)
+- In question.explanation, return an object:
+  "explanation": {
+    "summary": "<one short sentence saying what method is used>",
+    "steps": ["<step 1>", "<step 2>", "<step 3>"],
+    "conclusion": "<one short sentence with the final answer>"
+  }
+- ONE calculation or idea per step, each as its own array item.
+- No markdown, bullet dashes, asterisks or numbering inside the strings. The UI adds the formatting.
+- Keep each step under about 20 words.
+- Even for conceptual questions with no calculation (e.g. conformability, properties, matrix basics), split the reasoning into short separate steps, with at least 2 steps.
+- Step patterns by question type (apply to both question.explanation.steps and lesson.example.steps):
+  - add / sub: one step per entry, e.g. "Row 1, Col 1: 1 + 5 = 6"
+  - scalar: one step per entry, e.g. "Row 1, Col 1: 2 × 3 = 6"
+  - multiply: first a step checking the sizes (e.g. "A is 2×3 and B is 3×2, so AB is possible and is 2×2"), then one step per entry, e.g. "Row 1 × Column 1: (3)(1) + (2)(−1) = 1"
+  - transpose: one step per row, e.g. "Row 1 [2, 7] becomes Column 1"
+  - determinant: one step stating the formula, one step substituting the numbers, one step simplifying. For 3×3, one step per cofactor term.
+  - inverse (2×2): steps for the determinant, the adjugate (swap a and d, negate b and c), then multiplying by 1/det.
+  - inverse (3×3): steps for the determinant, the cofactor matrix, the transpose to get the adjugate, then multiplying by 1/det.
+  - check an inverse: one step per entry of AB, then a conclusion about whether AB = I.
+  - solve_system: steps for writing AX = b, finding A⁻¹, then computing X = A⁻¹b, then reading off each variable.
+  - application: steps for naming what each variable means, writing the matrix equation, solving, then stating each answer in words.
+  - conformability / properties / concept: one step per reason (e.g. "Columns of A = 3", "Rows of B = 2", "3 ≠ 2, so AB cannot be done").
 
 ### OUTPUT: ONE JSON object only, no markdown, exactly this shape
 {
@@ -89,7 +113,11 @@ Vectors (dot product, collinearity, parallel vectors, magnitude, angle between v
     "matrices": {},
     "options": ["..", "..", "..", ".."],
     "correctIndex": 0,
-    "explanation": "..."
+    "explanation": {
+      "summary": "<one short sentence saying what method is used>",
+      "steps": ["<step 1>", "<step 2>", "<step 3>"],
+      "conclusion": "<one short sentence with the final answer>"
+    }
   }
 }`;
 

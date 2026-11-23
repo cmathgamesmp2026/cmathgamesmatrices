@@ -20,8 +20,8 @@ export const STATIC_LESSONS = [
         description: 'Find the transpose of A.',
         matrices: { A: [[1, 2, 3], [4, 5, 6]] },
         steps: [
-          'Row 1 of A is [1, 2, 3], so it becomes column 1.',
-          'Row 2 of A is [4, 5, 6], so it becomes column 2.'
+          'Row 1 [1, 2, 3] becomes Column 1',
+          'Row 2 [4, 5, 6] becomes Column 2'
         ],
         result: [[1, 4], [2, 5], [3, 6]]
       }
@@ -37,8 +37,15 @@ export const STATIC_LESSONS = [
         [[7, 0, 1], [2, 3, 5]]
       ],
       correctIndex: 0,
-      explanation:
-        'Row 1 of A is [7, 1, 3] and becomes column 1. Row 2 is [0, 2, 5] and becomes column 2, so Aᵀ = [[7, 0], [1, 2], [3, 5]].'
+      explanation: {
+        summary: 'Interchange the rows and columns of matrix A.',
+        steps: [
+          'A is 2×3, so Aᵀ has size 3×2',
+          'Row 1 [7, 1, 3] becomes Column 1',
+          'Row 2 [0, 2, 5] becomes Column 2'
+        ],
+        conclusion: 'Therefore, Aᵀ = [[7, 0], [1, 2], [3, 5]].'
+      }
     }
   },
   {
@@ -53,7 +60,12 @@ export const STATIC_LESSONS = [
         type: 'scalar',
         description: 'Find 3A.',
         matrices: { A: [[1, 2], [0, 4]], k: 3 },
-        steps: ['Multiply each entry by 3: [3×1, 3×2] and [3×0, 3×4].'],
+        steps: [
+          'Row 1, Col 1: 3 × 1 = 3',
+          'Row 1, Col 2: 3 × 2 = 6',
+          'Row 2, Col 1: 3 × 0 = 0',
+          'Row 2, Col 2: 3 × 4 = 12'
+        ],
         result: [[3, 6], [0, 12]]
       }
     },
@@ -68,7 +80,16 @@ export const STATIC_LESSONS = [
         [[0, -3], [3, -2]]
       ],
       correctIndex: 2,
-      explanation: 'Multiply every entry of A by 2: [[2×2, 2×(−1)], [2×5, 2×0]] = [[4, −2], [10, 0]].'
+      explanation: {
+        summary: 'Multiply every entry of matrix A by the scalar 2.',
+        steps: [
+          'Row 1, Col 1: 2 × 2 = 4',
+          'Row 1, Col 2: 2 × (−1) = −2',
+          'Row 2, Col 1: 2 × 5 = 10',
+          'Row 2, Col 2: 2 × 0 = 0'
+        ],
+        conclusion: 'Therefore, 2A = [[4, -2], [10, 0]].'
+      }
     }
   },
   {
@@ -83,7 +104,11 @@ export const STATIC_LESSONS = [
         type: 'determinant',
         description: 'Find det(A).',
         matrices: { A: [[3, 1], [2, 4]] },
-        steps: ['a = 3, b = 1, c = 2, d = 4.', 'det(A) = (3)(4) − (1)(2) = 12 − 2 = 10.'],
+        steps: [
+          'Use the 2×2 determinant formula det(A) = ad − bc',
+          'Substitute a = 3, b = 1, c = 2, d = 4: (3)(4) − (1)(2)',
+          'Simplify: 12 − 2 = 10'
+        ],
         result: '10'
       }
     },
@@ -93,7 +118,15 @@ export const STATIC_LESSONS = [
       matrices: { A: [[5, 2], [3, 1]] },
       options: ['11', '1', '-1', '5'],
       correctIndex: 2,
-      explanation: 'det(A) = ad − bc = (5)(1) − (2)(3) = 5 − 6 = −1.'
+      explanation: {
+        summary: 'Apply the 2×2 determinant formula det(A) = ad − bc.',
+        steps: [
+          'Identify entries: a = 5, b = 2, c = 3, d = 1',
+          'Substitute into ad − bc: (5)(1) − (2)(3)',
+          'Simplify: 5 − 6 = −1'
+        ],
+        conclusion: 'The determinant det(A) is −1.'
+      }
     }
   }
 ];

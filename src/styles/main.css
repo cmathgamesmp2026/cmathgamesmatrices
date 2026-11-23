@@ -1424,3 +1424,74 @@ select:focus {
   background: #2563eb;
   color: #fff;
 }
+
+/* ===== STEP-BY-STEP WORKING & LESSON EXAMPLE DISPLAY ===== */
+.working-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  line-height: 1.6;
+}
+
+.working-summary {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+  line-height: 1.6;
+}
+
+.working-steps-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.working-step-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  line-height: 1.6;
+  font-size: 14px;
+  color: #cbd5e1;
+}
+
+.working-step-num {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: #38bdf8;
+  min-width: 20px;
+  flex-shrink: 0;
+}
+
+.working-step-body {
+  flex: 1;
+  line-height: 1.6;
+}
+
+.working-inline-matrix {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.working-conclusion {
+  font-size: 14px;
+  font-weight: 700;
+  color: #34d399;
+  line-height: 1.6;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.working-conclusion-prefix {
+  color: #38bdf8;
+}

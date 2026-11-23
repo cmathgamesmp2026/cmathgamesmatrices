@@ -778,6 +778,86 @@ function collectStrings(value, out = []) {
   return out;
 }
 
+export function cleanStepText(raw) {
+  return String(raw ?? '')
+    .trim()
+    .replace(/^(?:(?:step\s*\d+\s*[:.)\-–—]|\(\d+\)|\d+\s*[.):\-–—]|[-*•–—])\s*)+/i, '')
+    .trim();
+}
+
+export function splitTextToSteps(input) {
+  if (input == null) return [];
+  if (Array.isArray(input)) {
+    const out = [];
+    for (const item of input) {
+      if (typeof item === 'string') {
+        out.push(...splitTextToSteps(item));
+      } else if (item != null) {
+        const c = cleanStepText(String(item));
+        if (c) out.push(c);
+      }
+    }
+    return out;
+  }
+  const raw = String(input).trim();
+  if (!raw) return [];
+
+  const isNumberedList = /^(?:[-*•–—]\s*)?(?:step\s*)?1\s*[.):]/i.test(raw);
+  const separatorRe = isNumberedList
+    ? /\r?\n+|\s+•\s+|\s+[-–—]\s+(?=(?:[Ss]tep\s*\d|\d+\s*[.):]\s+[A-Z]|[-*•]\s|[A-Z][a-z]|(?:det|adj)\s*\(|A⁻¹|[a-z]{3,}\s+[a-z]))|(?<=[.;!])\s+[-–—]\s+|(?<=[a-z]{3,})\s+[-–—]\s+(?=[a-zA-Z]{3,})/
+    : /\r?\n+|\s+•\s+|\s+[-–—]\s+(?=(?:[Ss]tep\s*\d|[-*•]\s|[A-Z][a-z]|(?:det|adj)\s*\(|A⁻¹|[a-z]{3,}\s+[a-z]))|(?<=[.;!])\s+[-–—]\s+|(?<=[a-z]{3,})\s+[-–—]\s+(?=[a-zA-Z]{3,})/;
+
+  const parts = separatorRe.test(raw)
+    ? raw.split(separatorRe)
+    : raw.split(/\.(?:\s+|$)(?=[A-Z0-9(\["'])/);
+
+  return parts.map((p) => cleanStepText(p)).filter((p) => p.length > 0);
+}
+
+/**
+ * Ensures explanation has { summary, steps, conclusion } where steps is a non-empty array of strings.
+ * If explanation is a string or explanation.steps is missing/empty, applies the string fallback.
+ */
+export function normalizeExplanationObject(explanation, question = null) {
+  let summary = '';
+  let steps = [];
+  let conclusion = '';
+
+  if (typeof explanation === 'string' || Array.isArray(explanation)) {
+    steps = splitTextToSteps(explanation);
+  } else if (explanation && typeof explanation === 'object') {
+    if (typeof explanation.summary === 'string') summary = cleanStepText(explanation.summary);
+    if (explanation.conclusion !== undefined && explanation.conclusion !== null) {
+      conclusion = Array.isArray(explanation.conclusion)
+        ? JSON.stringify(explanation.conclusion)
+        : cleanStepText(String(explanation.conclusion));
+    }
+    if (Array.isArray(explanation.steps) && explanation.steps.length > 0) {
+      steps = splitTextToSteps(explanation.steps);
+    }
+    if (steps.length === 0) {
+      const fallbackText =
+        typeof explanation.text === 'string'
+          ? explanation.text
+          : typeof explanation.working === 'string'
+          ? explanation.working
+          : [summary, conclusion].filter(Boolean).join('. ');
+      steps = splitTextToSteps(fallbackText);
+    }
+  }
+
+  if (steps.length === 0) {
+    const answerOpt =
+      question && Array.isArray(question.options) && question.options[question.correctIndex] !== undefined
+        ? question.options[question.correctIndex]
+        : null;
+    const formattedAns = Array.isArray(answerOpt) ? JSON.stringify(answerOpt) : String(answerOpt ?? '');
+    steps = [formattedAns ? `Correct answer: ${formattedAns}` : 'Apply the definition from the lesson.'];
+  }
+
+  return { summary, steps, conclusion };
+}
+
 function canonValue(v) {
   if (v === undefined || v === null) return null;
   try {
@@ -836,9 +916,18 @@ export function verifyTurn(turn, expectedTopic = null) {
 
   const ex = lesson.example;
   if (!ex || typeof ex !== 'object') return fail('Lesson has no worked example');
+  if (Array.isArray(ex.steps) && ex.steps.length > 0) {
+    ex.steps = splitTextToSteps(ex.steps);
+  } else if (typeof ex.steps === 'string' && ex.steps.trim()) {
+    ex.steps = splitTextToSteps(ex.steps);
+  }
   if (!Array.isArray(ex.steps) || ex.steps.length === 0) return fail('Lesson example has no steps');
   if (ex.result === undefined || ex.result === null) return fail('Lesson example has no result');
   if (typeof question.text !== 'string' || !question.text.trim()) return fail('Question has no text');
+
+  // Normalize question.explanation so explanation.steps is always a non-empty array of strings
+  // (applies fallback splitting instead of rejecting the question if explanation is a string or steps is missing/empty).
+  question.explanation = normalizeExplanationObject(question.explanation, question);
 
   // Topic must be one of the 10 and the one the server assigned
   const topicText = String(turn.topic ?? '');

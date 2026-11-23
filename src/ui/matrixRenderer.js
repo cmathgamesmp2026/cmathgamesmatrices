@@ -1,6 +1,6 @@
 /**
- * HTML/CSS Matrix and Math Renderer
- * Formats 2D arrays, vectors, and fractions into clean bracketed mathematical structures.
+ * HTML/CSS Matrix, Math, and Step-by-Step Working Renderer
+ * Formats 2D arrays, vectors, fractions, and multi-step explanations into clean HTML.
  */
 
 /** Escape text coming from the AI before it goes into innerHTML. */
@@ -67,7 +67,7 @@ export function renderMatrixHTML(matrixData, label = '') {
     })
     .join('');
 
-  const labelHTML = label ? `<span class="matrix-label">${label}</span>` : '';
+  const labelHTML = label ? `<span class="matrix-label">${escapeHTML(label)}</span>` : '';
 
   return `
     <div class="matrix-container" data-rows="${rows}" data-cols="${cols}">
@@ -174,6 +174,232 @@ export function renderMatricesSection(matrices) {
   return `
     <div class="question-matrices-display">
       ${parts.join('')}
+    </div>
+  `;
+}
+
+/**
+ * Strip leading bullet dashes, asterisks, bullets, or step numbering from a single step string.
+ */
+export function cleanStepString(raw) {
+  return String(raw ?? '')
+    .trim()
+    .replace(/^(?:(?:step\s*\d+\s*[:.)\-–—]|\(\d+\)|\d+\s*[.):\-–—]|[-*•–—])\s*)+/i, '')
+    .trim();
+}
+
+/**
+ * Convert a single string (or array of strings) into clean individual step strings:
+ *  - Splits on newline characters, " • ", and " - " / " – " / " — " item separators
+ *    (without breaking arithmetic subtraction like "3 - 2 = 1" or "ad - bc").
+ *  - Splits on sentence-final periods only if no other separators exist.
+ *  - Strips leading "-", "*", "•" or numbering, trims whitespace, and drops empty pieces.
+ */
+export function splitTextToSteps(input) {
+  if (input == null) return [];
+
+  if (Array.isArray(input)) {
+    const out = [];
+    for (const item of input) {
+      if (Array.isArray(item)) {
+        out.push(item);
+      } else if (typeof item === 'string') {
+        const sub = splitSingleStringToSteps(item);
+        out.push(...sub);
+      } else if (item != null) {
+        const cleaned = cleanStepString(String(item));
+        if (cleaned) out.push(cleaned);
+      }
+    }
+    return out;
+  }
+
+  if (typeof input === 'string') {
+    return splitSingleStringToSteps(input);
+  }
+
+  return [];
+}
+
+function splitSingleStringToSteps(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return [];
+
+  const isNumberedList = /^(?:[-*•–—]\s*)?(?:step\s*)?1\s*[.):]/i.test(raw);
+  const separatorRe = isNumberedList
+    ? /\r?\n+|\s+•\s+|\s+[-–—]\s+(?=(?:[Ss]tep\s*\d|\d+\s*[.):]\s+[A-Z]|[-*•]\s|[A-Z][a-z]|(?:det|adj)\s*\(|A⁻¹|[a-z]{3,}\s+[a-z]))|(?<=[.;!])\s+[-–—]\s+|(?<=[a-z]{3,})\s+[-–—]\s+(?=[a-zA-Z]{3,})/
+    : /\r?\n+|\s+•\s+|\s+[-–—]\s+(?=(?:[Ss]tep\s*\d|[-*•]\s|[A-Z][a-z]|(?:det|adj)\s*\(|A⁻¹|[a-z]{3,}\s+[a-z]))|(?<=[.;!])\s+[-–—]\s+|(?<=[a-z]{3,})\s+[-–—]\s+(?=[a-zA-Z]{3,})/;
+
+  let parts;
+  if (separatorRe.test(raw)) {
+    parts = raw.split(separatorRe);
+  } else {
+    // No newline, bullet, or dash separator found: split on sentence-final periods.
+    parts = raw.split(/\.(?:\s+|$)(?=[A-Z0-9(\["'])/);
+  }
+
+  return parts
+    .map((piece) => cleanStepString(piece))
+    .filter((piece) => piece.length > 0);
+}
+
+/**
+ * Normalizes any explanation or worked-example structure into:
+ *   { summary: string, steps: Array<string|Array>, conclusion: string|Array }
+ * Never rejects if steps are missing/empty; falls back to splitting string content.
+ */
+export function normalizeExplanation(explanation) {
+  if (explanation == null) {
+    return { summary: '', steps: [], conclusion: '' };
+  }
+
+  if (typeof explanation === 'string' || Array.isArray(explanation)) {
+    return {
+      summary: '',
+      steps: splitTextToSteps(explanation),
+      conclusion: ''
+    };
+  }
+
+  if (typeof explanation === 'object') {
+    const rawSummary = explanation.summary ?? explanation.description ?? '';
+    const summary = typeof rawSummary === 'string' ? cleanStepString(rawSummary) : '';
+
+    const hasConclusion = explanation.conclusion !== undefined && explanation.conclusion !== null;
+    const hasResult = explanation.result !== undefined && explanation.result !== null;
+    const rawConclusion = hasConclusion ? explanation.conclusion : hasResult ? explanation.result : '';
+    const conclusion = Array.isArray(rawConclusion)
+      ? rawConclusion
+      : typeof rawConclusion === 'string' || typeof rawConclusion === 'number'
+      ? cleanStepString(String(rawConclusion))
+      : '';
+
+    let steps = [];
+    if (Array.isArray(explanation.steps) && explanation.steps.length > 0) {
+      steps = splitTextToSteps(explanation.steps);
+    }
+
+    // Fallback (Section 4 & 5): if steps is missing or empty, extract from text fields
+    if (steps.length === 0) {
+      const fallbackSource =
+        typeof explanation.text === 'string'
+          ? explanation.text
+          : typeof explanation.working === 'string'
+          ? explanation.working
+          : typeof rawSummary === 'string' && rawSummary.length > 0
+          ? rawSummary
+          : typeof conclusion === 'string'
+          ? conclusion
+          : '';
+      steps = splitTextToSteps(fallbackSource);
+    }
+
+    return { summary, steps, conclusion };
+  }
+
+  return { summary: '', steps: [], conclusion: '' };
+}
+
+/**
+ * Renders a step or conclusion value. If the value is a 2D matrix array, a JSON matrix string,
+ * or contains an inline 2D matrix like "Aᵀ = [[7, 0], [1, 2], [3, 5]]", renders the matrix
+ * as an HTML bracketed grid.
+ */
+export function renderStepValueHTML(val) {
+  if (val == null) return '';
+  if (Array.isArray(val)) {
+    return renderMatrixHTML(val);
+  }
+
+  const str = String(val).trim();
+  if (!str) return '';
+
+  // Pure matrix string
+  if ((str.startsWith('[[') || str.startsWith('[ [')) && str.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(str.replace(/'/g, '"'));
+      if (Array.isArray(parsed)) return renderMatrixHTML(parsed);
+    } catch {
+      // fall through
+    }
+  }
+
+  // String with one or more inline 2D matrices e.g. "Therefore A^T = [[1, 4], [2, 5]]."
+  const inlineMatrixRe = /\[\s*\[[^\]]+\](?:\s*,\s*\[[^\]]+\])*\s*\]/g;
+  if (inlineMatrixRe.test(str)) {
+    inlineMatrixRe.lastIndex = 0;
+    let html = '';
+    let lastIdx = 0;
+    let match;
+    while ((match = inlineMatrixRe.exec(str)) !== null) {
+      const before = str.slice(lastIdx, match.index);
+      if (before) html += `<span>${escapeHTML(before)}</span>`;
+      try {
+        const normalizedJson = match[0].replace(/'/g, '"').replace(/[\u2212\u2013]/g, '-');
+        const parsed = JSON.parse(normalizedJson);
+        if (Array.isArray(parsed)) {
+          html += renderMatrixHTML(parsed);
+        } else {
+          html += `<span>${escapeHTML(match[0])}</span>`;
+        }
+      } catch {
+        html += `<span>${escapeHTML(match[0])}</span>`;
+      }
+      lastIdx = match.index + match[0].length;
+    }
+    const tail = str.slice(lastIdx);
+    if (tail) html += `<span>${escapeHTML(tail)}</span>`;
+    return `<span class="working-inline-matrix">${html}</span>`;
+  }
+
+  return `<span>${escapeHTML(str)}</span>`;
+}
+
+/**
+ * Shared step-by-step renderer used for:
+ *  - Question working / explanation (for all 12 question types & all 10 topics, correct or wrong)
+ *  - Lesson worked example (lesson.example)
+ *
+ * Builds the layout from the steps array (one element per step, never relying on newlines).
+ */
+export function renderWorkingHTML(explanationInput, { matrices = null, conclusionPrefix = '' } = {}) {
+  const { summary, steps, conclusion } = normalizeExplanation(explanationInput);
+
+  const summaryHTML = summary
+    ? `<div class="working-summary">${renderStepValueHTML(summary)}</div>`
+    : '';
+
+  const matricesHTML = matrices ? renderMatricesSection(matrices) : '';
+
+  const stepsItemsHTML = steps
+    .map(
+      (step, idx) => `
+      <li class="working-step-item">
+        <span class="working-step-num">${idx + 1}.</span>
+        <div class="working-step-body">${renderStepValueHTML(step)}</div>
+      </li>`
+    )
+    .join('');
+
+  const stepsListHTML = stepsItemsHTML
+    ? `<ol class="working-steps-list">${stepsItemsHTML}</ol>`
+    : '';
+
+  const hasConclusion =
+    (Array.isArray(conclusion) && conclusion.length > 0) ||
+    (typeof conclusion === 'string' && conclusion.length > 0);
+
+  const prefixHTML = conclusionPrefix ? `<span class="working-conclusion-prefix">${escapeHTML(conclusionPrefix)} </span>` : '';
+  const conclusionHTML = hasConclusion
+    ? `<div class="working-conclusion">${prefixHTML}${renderStepValueHTML(conclusion)}</div>`
+    : '';
+
+  return `
+    <div class="working-block">
+      ${summaryHTML}
+      ${matricesHTML}
+      ${stepsListHTML}
+      ${conclusionHTML}
     </div>
   `;
 }

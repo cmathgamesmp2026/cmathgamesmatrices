@@ -16,7 +16,11 @@ import {
   getTilePositionVector,
   formatVectorMove
 } from '../game/powerCards.js';
-import { renderOptionContent, renderMatricesSection } from './matrixRenderer.js';
+import {
+  renderOptionContent,
+  renderMatricesSection,
+  renderWorkingHTML
+} from './matrixRenderer.js';
 
 // Optional "Peek at lesson" button during the test (off by default).
 const ALLOW_PEEK = false;
@@ -73,6 +77,7 @@ export class HTMLUI {
       lessonTopicCount: document.getElementById('lesson-topic-count'),
       lessonTitle: document.getElementById('lesson-title'),
       lessonKeyPoints: document.getElementById('lesson-key-points'),
+      lessonExampleBody: document.getElementById('lesson-example-body'),
       lessonExampleDesc: document.getElementById('lesson-example-desc'),
       lessonExampleMatrices: document.getElementById('lesson-example-matrices'),
       lessonExampleSteps: document.getElementById('lesson-example-steps'),
@@ -551,19 +556,17 @@ export class HTMLUI {
       el.lessonKeyPoints.appendChild(li);
     });
 
-    const ex = lesson.example;
-    el.lessonExampleDesc.textContent = ex.description || '';
-    el.lessonExampleMatrices.innerHTML = renderMatricesSection(ex.matrices);
-    el.lessonExampleMatrices.classList.toggle('hidden', !ex.matrices);
-
-    el.lessonExampleSteps.innerHTML = '';
-    (ex.steps || []).forEach((step) => {
-      const li = document.createElement('li');
-      li.textContent = step;
-      el.lessonExampleSteps.appendChild(li);
-    });
-
-    el.lessonExampleResult.innerHTML = `<span>Result:</span> ${renderOptionContent(ex.result)}`;
+    const ex = lesson.example || {};
+    if (el.lessonExampleBody) {
+      el.lessonExampleBody.innerHTML = renderWorkingHTML(
+        {
+          summary: ex.description || ex.summary || '',
+          steps: ex.steps || [],
+          conclusion: ex.result !== undefined ? ex.result : ex.conclusion
+        },
+        { matrices: ex.matrices, conclusionPrefix: 'Result:' }
+      );
+    }
   }
 
   /** LEARN -> TEST: show the question for the same topic. */
@@ -652,11 +655,9 @@ export class HTMLUI {
         <span>Incorrect. Low roll chance applied (70% for 1, 2, 3).</span>
       `;
     }
-    this.elements.feedbackExplanation.innerHTML = '';
-    const working = document.createElement('strong');
-    working.textContent = 'Working: ';
-    this.elements.feedbackExplanation.appendChild(working);
-    this.elements.feedbackExplanation.appendChild(document.createTextNode(q.explanation || 'See your notes for the steps.'));
+    this.elements.feedbackExplanation.innerHTML = renderWorkingHTML(
+      q.explanation || 'See your notes for the steps.'
+    );
 
     // 4. REWARD: if correct, award one random power card (cap 2 each). If wrong, no card.
     const awardedCard = this.cards.awardRandomCard(isCorrect);
