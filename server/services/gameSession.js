@@ -1,13 +1,15 @@
 /**
  * Per-game server state: topic order, contexts for application problems,
- * and the questions already used. Held in memory (a game lasts minutes).
+ * and the pool items / signatures already served in this game.
+ * Held in memory with cleanup of games older than 3 hours.
  *
  * - Topics come from a shuffled order of the 10 syllabus topics, with no repeat
  *   until all 10 have been used, then a fresh shuffle.
- * - assignTurn() is idempotent per turn number, so a retry, a prefetch or a
- *   difficulty change for the same turn never burns another topic.
+ * - assignTurn() is idempotent per turn number, so a retry or a difficulty
+ *   change for the same turn never burns another topic.
  */
 
+import crypto from 'crypto';
 import { SYLLABUS_TOPICS } from './mathVerify.js';
 
 export const TOPICS = SYLLABUS_TOPICS.map((name, i) => ({
@@ -34,7 +36,7 @@ export const CONTEXTS = [
   'factory production of different products'
 ];
 
-const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
+export const SESSION_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours
 const MAX_SESSIONS = 2000;
 const sessions = new Map();
 
@@ -57,18 +59,38 @@ export function createSession(rnd = Math.random) {
     pos: 0,
     lastTopic: null,
     turns: new Map(), // turn number -> assignment
-    usedContexts: new Set(),
+    servedIds: new Set(), // pool item ids served in this game
+    servedSignatures: new Set(), // SHA-256 signatures served in this game
+    usedContexts: new Set(), // lowercase application contexts actually served in this game
+    assignedContexts: new Set(), // lowercase contexts already assigned to live turns
     usedQuestionKeys: new Set(),
     recentQuestions: [],
     lastSeen: Date.now()
   };
 }
 
-/** Get (or create) the session for a game id, pruning old sessions. */
-export function getSession(gameId, now = Date.now()) {
+function pruneSessions(now = Date.now()) {
   for (const [id, s] of sessions) {
     if (now - s.lastSeen > SESSION_TTL_MS) sessions.delete(id);
   }
+}
+
+/** Create a brand-new server-issued game id and empty seen sets. */
+export function startNewGame(now = Date.now(), rnd = Math.random) {
+  pruneSessions(now);
+  if (sessions.size >= MAX_SESSIONS) {
+    sessions.delete(sessions.keys().next().value);
+  }
+  const gameId = crypto.randomUUID();
+  const session = createSession(rnd);
+  session.lastSeen = now;
+  sessions.set(gameId, session);
+  return { gameId, session };
+}
+
+/** Get (or create) the session for a game id, pruning games older than 3 hours. */
+export function getSession(gameId, now = Date.now()) {
+  pruneSessions(now);
   if (sessions.size >= MAX_SESSIONS && !sessions.has(gameId)) {
     sessions.delete(sessions.keys().next().value);
   }
@@ -82,15 +104,18 @@ export function getSession(gameId, now = Date.now()) {
 }
 
 function pickContexts(session, rnd) {
-  let free = CONTEXTS.filter((c) => !session.usedContexts.has(c));
+  let free = CONTEXTS.filter(
+    (c) => !session.usedContexts.has(c.toLowerCase()) && !session.assignedContexts.has(c.toLowerCase())
+  );
   if (free.length < 2) {
     // Every context has been used in a very long game: start the pool again.
-    session.usedContexts.clear();
-    free = [...CONTEXTS];
+    session.assignedContexts.clear();
+    free = CONTEXTS.filter((c) => !session.usedContexts.has(c.toLowerCase()));
+    if (free.length < 2) free = [...CONTEXTS];
   }
   const [lessonContext, questionContext] = shuffled(free, rnd);
-  session.usedContexts.add(lessonContext);
-  session.usedContexts.add(questionContext);
+  session.assignedContexts.add(lessonContext.toLowerCase());
+  session.assignedContexts.add(questionContext.toLowerCase());
   return { lessonContext, questionContext };
 }
 
@@ -116,18 +141,42 @@ export function assignTurn(session, turn, rnd = Math.random) {
   return assignment;
 }
 
-/** Key used to stop the same question appearing twice in one game. */
-export function questionKey(question) {
-  const text = String(question.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  return `${text}|${JSON.stringify(question.matrices ?? null)}`;
+/**
+ * Return the remaining topics in the shuffled order after the failed topic,
+ * so the server can fall back to the next topic that still has an unseen pool item.
+ */
+export function getFallbackTopics(session, excludeTopicNumber) {
+  const remaining = session.order.slice(session.pos);
+  const earlier = session.order.slice(0, session.pos);
+  const ordered = [...remaining, ...earlier].filter((n) => n !== excludeTopicNumber);
+  return ordered.map((n) => TOPICS[n - 1]);
 }
 
-export function isDuplicateQuestion(session, question) {
+/** Key used to stop the same question appearing twice in one game. */
+export function questionKey(question) {
+  const text = String(question?.text || question?.question || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  return `${text}|${JSON.stringify(question?.matrices ?? null)}`;
+}
+
+export function isDuplicateQuestion(session, question, { id = null, signature = null, context = null } = {}) {
+  if (id != null && session.servedIds.has(id)) return true;
+  if (signature && session.servedSignatures.has(signature)) return true;
+  if (context && session.usedContexts.has(String(context).toLowerCase())) return true;
   return session.usedQuestionKeys.has(questionKey(question));
 }
 
-export function recordQuestion(session, question) {
+export function recordQuestion(session, question, { id = null, signature = null, context = null } = {}) {
+  if (id != null) session.servedIds.add(id);
+  if (signature) session.servedSignatures.add(signature);
+  if (context) {
+    const lower = String(context).toLowerCase();
+    session.usedContexts.add(lower);
+    session.assignedContexts.add(lower);
+  }
   session.usedQuestionKeys.add(questionKey(question));
-  session.recentQuestions.push(String(question.text || '').slice(0, 100));
+  session.recentQuestions.push(String(question?.text || '').slice(0, 100));
   if (session.recentQuestions.length > 8) session.recentQuestions.shift();
 }

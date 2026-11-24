@@ -11,6 +11,7 @@ dotenv.config();
 import questionRoutes from './routes/questions.js';
 import leaderboardRoutes from './routes/leaderboard.js';
 import { DEFAULT_GEMINI_MODEL, SUPPORTED_GEMINI_MODELS } from './services/gemini.js';
+import { checkPoolTableExists } from './services/questionPool.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,7 +50,11 @@ if (fs.existsSync(distPath)) {
   });
 }
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`[Server] Express server running at http://localhost:${PORT}`);
   console.log(`[Server] Gemini Model configured: ${process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL}`);
+  const poolOk = await checkPoolTableExists();
+  if (poolOk) {
+    console.log('[Server] Question pool table (cmathgames.question_pool) verified.');
+  }
 });

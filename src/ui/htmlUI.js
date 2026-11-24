@@ -228,7 +228,7 @@ export class HTMLUI {
     this.beginTurn();
   }
 
-  handleStartGame() {
+  async handleStartGame() {
     const rawName = this.elements.nameInput.value.trim();
     if (!rawName) {
       this.elements.nameError.textContent = 'Please enter your name to begin!';
@@ -258,8 +258,17 @@ export class HTMLUI {
     this.pendingMoveContext = null;
     this.hideCardRewardBanner();
     this.updateVectorMoveDisplay(1, 1);
-    this.gameId = crypto.randomUUID();
     this.prefetch = null;
+
+    // Request a server-issued gameId so seen sets start empty for this round
+    try {
+      const res = await fetch('/api/question/start', { method: 'POST' });
+      const data = await res.json();
+      this.gameId = data && data.success && data.gameId ? data.gameId : crypto.randomUUID();
+    } catch {
+      this.gameId = crypto.randomUUID();
+    }
+
     this.beginTurn();
   }
 
