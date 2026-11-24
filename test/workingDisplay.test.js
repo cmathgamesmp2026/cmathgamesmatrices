@@ -5,8 +5,8 @@ import {
   normalizeExplanation,
   renderWorkingHTML
 } from '../src/ui/matrixRenderer.js';
-import { verifyTurn } from '../server/services/mathVerify.js';
-import { TOPICS } from '../server/services/gameSession.js';
+import { verifyTurn } from '../shared/mathVerify.js';
+import { TOPICS } from '../shared/topics.js';
 
 describe('Step-by-step Working Display & Shared Renderer', () => {
   it('renders the multiplication example as numbered separate lines with summary and bold conclusion', () => {

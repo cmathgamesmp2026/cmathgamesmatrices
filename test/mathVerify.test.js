@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { Fraction, Matrix, verifyQuestion } from '../server/services/mathVerify.js';
+import { Fraction, Matrix, verifyQuestion } from '../shared/mathVerify.js';
 
 describe('Fraction Arithmetic', () => {
   it('correctly simplifies fractions', () => {

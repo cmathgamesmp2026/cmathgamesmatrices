@@ -1,0 +1,16 @@
+name = "matrices-snl"
+pages_build_output_dir = "dist"
+compatibility_date = "2025-10-01"
+
+[[d1_databases]]
+binding = "cmathgames_db"
+database_name = "cmathgames-db"
+database_id = "0e1f4466-98c8-4984-a0d2-fa0a53f84241"
+
+[vars]
+GEMINI_MODELS = "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.6-flash,gemini-3.1-flash-lite"
+GEMINI_MODEL = "gemini-3.5-flash"
+GEMINI_MIN_GAP_MS = "4000"
+BATCH_SIZE = "4"
+POOL_MIN_PER_TOPIC = "4"
+POOL_TARGET_PER_TOPIC = "10"

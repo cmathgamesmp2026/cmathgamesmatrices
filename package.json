@@ -4,24 +4,24 @@
   "description": "Web-based Snake and Ladders game with AI-generated Computing Mathematics (Matrices) questions",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n \"server,vite\" -c \"blue,green\" \"node server/server.js\" \"vite\"",
+    "dev": "wrangler pages dev -- npx vite",
     "build": "vite build",
-    "start": "node server/server.js",
-    "init-db": "node server/scripts/initDb.js",
-    "seed-pool": "node server/scripts/seedPool.js",
+    "deploy": "wrangler pages deploy dist",
+    "db:local": "wrangler d1 execute matrices-snl-db --local --file=db/schema.sql",
+    "db:remote": "wrangler d1 execute matrices-snl-db --remote --file=db/schema.sql",
+    "seed-pool": "node scripts/seedPool.js",
+    "migrate-mysql-to-d1": "node scripts/migrateMysqlToD1.js",
     "test": "node --test test/**/*.test.js"
   },
   "dependencies": {
-    "@google/genai": "^3.3.0",
-    "cors": "^2.8.6",
-    "dotenv": "^18.0.10",
-    "express": "^5.3.0",
-    "mysql2": "^3.24.6",
     "phaser": "^3.90.0"
   },
   "devDependencies": {
     "concurrently": "^10.0.7",
+    "dotenv": "^18.0.10",
+    "mysql2": "^3.24.6",
     "terser": "^5.51.2",
-    "vite": "^8.3.8"
+    "vite": "^8.3.8",
+    "wrangler": "^4.14.0"
   }
 }

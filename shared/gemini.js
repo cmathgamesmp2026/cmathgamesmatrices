@@ -1,37 +1,39 @@
-import { GoogleGenAI } from '@google/genai';
+/**
+ * Shared Gemini REST API client, prompt builders, option shuffler, model fallback,
+ * and batch generation with exact-fraction verification.
+ *
+ * Uses ONLY web-standard APIs (fetch, AbortController, crypto.subtle) — no Node-only
+ * modules, no @google/genai SDK, and reads settings only from `env`.
+ */
+
 import { verifyTurn, compareValues } from './mathVerify.js';
-import { pickStaticFallback } from './staticFallback.js';
-import { computeSignature } from './questionPool.js';
+import { computeSignature } from './signature.js';
 import {
   DEFAULT_GEMINI_MODEL,
+  DEFAULT_BATCH_SIZE,
+  SUPPORTED_GEMINI_MODELS,
   getConfiguredModels,
-  modelQuota,
-  geminiQueue
-} from './geminiQueue.js';
+  getIntSetting
+} from './config.js';
+import { InMemoryModelStateStore } from './modelState.js';
 
-export { DEFAULT_GEMINI_MODEL, getConfiguredModels, modelQuota, geminiQueue };
+export {
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_BATCH_SIZE,
+  SUPPORTED_GEMINI_MODELS,
+  getConfiguredModels
+};
 
-export const SUPPORTED_GEMINI_MODELS = [
-  'gemini-3.5-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-3.8-flash',
-  'gemini-3.7-flash',
-  'gemini-3.6-flash',
-  'gemini-3.1-flash-lite',
-  'gemini-4-argon'
-];
-
-export const BATCH_SIZE = Math.max(1, parseInt(process.env.BATCH_SIZE || '4', 10));
 export const MAX_BATCH_RETRIES = 1;
-
-/** Emergency switch: if true, a few hardcoded verified lessons are used when generation fails. */
-export const USE_STATIC_FALLBACK = false;
-
-/** Verification retries per turn (so at most 1 + 2 = 3 Gemini calls that produce a rejected turn). */
-export const MAX_VERIFY_RETRIES = 2;
 
 /** Growing delays before retrying a 503 (about 1s, then 3s). */
 export const RETRY_DELAYS_MS = [1000, 3000];
+
+/** Default timeouts & cooldowns (overridable via env vars). */
+export const DEFAULT_GEMINI_TIMEOUT_MS = 20000;
+export const DEFAULT_LIVE_DEADLINE_MS = 18000;
+export const DEFAULT_503_COOLDOWN_SEC = 30;
+export const DEFAULT_ERROR_COOLDOWN_SEC = 60;
 
 /** Error with a machine-readable code and the HTTP status the API should return. */
 export class ServiceError extends Error {
@@ -43,7 +45,7 @@ export class ServiceError extends Error {
   }
 }
 
-const SYSTEM_PROMPT = `You write one short lesson and one test question at a time for a first-year Computing Mathematics course, "CMATHS Topic 2: Matrices". Students read your lesson, then answer your question on the SAME topic.
+export const SYSTEM_PROMPT = `You write one short lesson and one test question at a time for a first-year Computing Mathematics course, "CMATHS Topic 2: Matrices". Students read your lesson, then answer your question on the SAME topic.
 
 ### SYLLABUS: the lesson and question MUST stay inside this and nothing else
 1. Matrix basics: dimension (m × n), entries a_jk (row j, column k), vector (m × 1), square matrix, identity matrix I, diagonal matrix, null (zero) matrix, leading diagonal.
@@ -131,7 +133,7 @@ Vectors (dot product, collinearity, parallel vectors, magnitude, angle between v
   }
 }`;
 
-const TOPIC_FOCUS = {
+export const TOPIC_FOCUS = {
   1: { Easy: 'dimension, entries a_jk, square/identity/diagonal/null matrices, leading diagonal', Hard: 'the same ideas on a 3×3 matrix, or combining two facts (e.g. dimension and the leading diagonal)' },
   2: { Easy: 'adding or subtracting 2×2 or 2×3 matrices, or deciding if two matrices are conformable', Hard: 'adding or subtracting 3×3 matrices, or using commutative/associative properties' },
   3: { Easy: 'k·A for a 2×2 matrix', Hard: 'multi-step expressions such as 2D − 3C or 2I + C with 2×2 or 3×3 matrices' },
@@ -144,39 +146,11 @@ const TOPIC_FOCUS = {
   10: { Easy: 'a simple 2×2 real-world setup solved with matrices', Hard: 'a 3×3 real-world setup, or a cost/quantity table product' }
 };
 
-function buildUserPrompt({ assignment, difficulty, avoidQuestions }) {
-  const { topic } = assignment;
-  const level = difficulty === 'Hard' ? 'Hard' : 'Easy';
-  const focus = TOPIC_FOCUS[topic.number][level];
-
-  const lines = [
-    `Write the lesson and question for topic ${topic.label}.`,
-    `Difficulty: ${level.toUpperCase()}. Focus: ${focus}.`,
-    level === 'Easy'
-      ? 'Easy rules: topics 7 to 9 stay at 2×2 level; use small integers (about -5 to 9).'
-      : 'Hard rules: 3×3 and tougher multi-step questions are allowed; keep every entry a small integer.'
-  ];
-
-  if (assignment.lessonContext) {
-    lines.push(
-      `The lesson's worked example uses this real-world context: ${assignment.lessonContext}.`,
-      `The test question uses a DIFFERENT context: ${assignment.questionContext}.`,
-      'Do not use muffins or coffee. Use small realistic whole-number prices and quantities.'
-    );
-  }
-  if (avoidQuestions.length > 0) {
-    lines.push(`Do not repeat these earlier questions: ${avoidQuestions.map((q) => `"${q}"`).join('; ')}.`);
-  }
-  lines.push('Check all arithmetic carefully. Reply with the JSON object only.');
-  return lines.join('\n');
-}
-
 /** Shuffles the 4 options and updates correctIndex (works on the question object). */
 export function shuffleOptions(questionObj) {
   const originalCorrect = questionObj.options[questionObj.correctIndex];
   const items = questionObj.options.map((opt, idx) => ({ opt, isCorrect: idx === questionObj.correctIndex }));
 
-  // Fisher-Yates shuffle
   for (let i = items.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [items[i], items[j]] = [items[j], items[i]];
@@ -195,7 +169,7 @@ export function shuffleOptions(questionObj) {
   };
 }
 
-/** Work out the HTTP status behind an SDK error (429 quota, 503 overloaded, ...). */
+/** Work out the HTTP status behind an error (429 quota, 503 overloaded, ...). */
 export function getHttpStatus(err) {
   const direct = err?.status ?? err?.code ?? err?.error?.code;
   if (typeof direct === 'number') return direct;
@@ -207,47 +181,96 @@ export function getHttpStatus(err) {
   return null;
 }
 
-/** The real Gemini call for a specific model: JSON mode, returns raw response text. */
-async function callGeminiModel(prompt, modelName) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey.trim() === '' || apiKey === 'your_gemini_api_key_here') {
-    throw new ServiceError('NOT_CONFIGURED', 'GEMINI_API_KEY is not configured in .env.', 500);
+/**
+ * Call Gemini REST API directly via fetch + AbortController.
+ */
+export async function callGeminiRest(prompt, modelName, { apiKey, timeoutMs = DEFAULT_GEMINI_TIMEOUT_MS, fetchImpl = fetch } = {}) {
+  const key = String(apiKey || '').trim();
+  if (!key || key === 'your_gemini_api_key_here') {
+    throw new ServiceError('NOT_CONFIGURED', 'GEMINI_API_KEY is not configured.', 500);
   }
-  const model = (modelName || getConfiguredModels()[0]).trim();
-  const ai = new GoogleGenAI({ apiKey });
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      responseMimeType: 'application/json',
-      temperature: 0.6
+
+  const model = String(modelName || DEFAULT_GEMINI_MODEL).trim();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(500, timeoutMs));
+
+  try {
+    const res = await fetchImpl(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': key
+      },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.6
+        }
+      }),
+      signal: controller.signal
+    });
+
+    const rawText = await res.text();
+    if (!res.ok) {
+      const err = new Error(`Gemini HTTP ${res.status}: ${rawText.slice(0, 300)}`);
+      err.status = res.status;
+      throw err;
     }
-  });
-  return response.text;
+
+    const data = JSON.parse(rawText);
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    const text = parts.map((p) => p.text || '').join('');
+    if (!text) {
+      const err = new Error('Gemini returned an empty response.');
+      err.status = 502;
+      throw err;
+    }
+    return text;
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      const timeoutErr = new Error(`Gemini request timed out after ${timeoutMs}ms`);
+      timeoutErr.status = 504;
+      timeoutErr.isTimeout = true;
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Call Gemini through the serial request queue with model fallback:
+ * Call Gemini with model fallback backed by `modelStore` (D1ModelStateStore or InMemoryModelStateStore):
  *  - 429: mark model exhausted until next midnight Pacific time, do NOT retry it, move to next model.
- *  - 503: retry up to 2 times with growing delay (1s then 3s), then move to next model.
- *  - If all models are exhausted, stop calling Gemini immediately.
+ *  - 503: retry up to 2 times with growing delay (1s then 3s), then mark cooling and move to next model.
+ *  - Timeout / deadline exceeded: move to next model or stop if overall deadlineMs has passed.
+ *  - Other upstream error: mark unavailable for short cooldown and move to next model.
+ *  - If all models are blocked/exhausted, stop calling Gemini immediately.
  */
 export async function callWithModelFallback(
   prompt,
   {
-    callModel = callGeminiModel,
+    env = {},
+    apiKey = env?.GEMINI_API_KEY,
+    models = getConfiguredModels(env),
+    modelStore = new InMemoryModelStateStore(),
+    callModel = null,
     sleep = defaultSleep,
     logger = console,
-    models = getConfiguredModels(),
-    quota = modelQuota,
-    queue = geminiQueue,
-    now = () => Date.now()
+    now = () => Date.now(),
+    timeoutMs = getIntSetting(env, 'GEMINI_TIMEOUT_MS', DEFAULT_GEMINI_TIMEOUT_MS, 1000),
+    deadlineMs = null,
+    cooldown503Sec = getIntSetting(env, 'GEMINI_503_COOLDOWN_SEC', DEFAULT_503_COOLDOWN_SEC, 5),
+    cooldownErrorSec = getIntSetting(env, 'GEMINI_ERROR_COOLDOWN_SEC', DEFAULT_ERROR_COOLDOWN_SEC, 5)
   } = {}
 ) {
-  const available = quota.getAvailableModels(models, now());
+  const available = await modelStore.getAvailableModels(models, now());
   if (available.length === 0) {
     throw new ServiceError('RATE_LIMIT', 'The question service is busy, please try again soon', 429);
   }
@@ -256,18 +279,35 @@ export async function callWithModelFallback(
   let lastError = null;
 
   for (const model of available) {
-    if (quota.isExhausted(model, now())) continue;
+    if (deadlineMs !== null && now() >= deadlineMs) {
+      throw new ServiceError('TIMEOUT', 'Live generation deadline exceeded.', 504);
+    }
+    if (await modelStore.isBlocked(model, now())) continue;
 
     for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+      if (deadlineMs !== null && now() >= deadlineMs) {
+        throw new ServiceError('TIMEOUT', 'Live generation deadline exceeded.', 504);
+      }
+
+      const remainingMs = deadlineMs !== null ? Math.max(500, deadlineMs - now()) : timeoutMs;
+      const attemptTimeout = Math.min(timeoutMs, remainingMs);
+      const startedAt = now();
+
       try {
-        return await queue.enqueue(() => callModel(prompt, model));
+        const text = callModel
+          ? await callModel(prompt, model, { timeoutMs: attemptTimeout })
+          : await callGeminiRest(prompt, model, { apiKey, timeoutMs: attemptTimeout });
+
+        const elapsedMs = Math.max(1, now() - startedAt);
+        await modelStore.recordSuccess(model, elapsedMs);
+        return text;
       } catch (err) {
         if (err instanceof ServiceError) throw err;
         const status = getHttpStatus(err);
         lastError = err;
 
         if (status === 429) {
-          const resetAt = quota.markExhausted(model, now());
+          const resetAt = await modelStore.markExhausted(model, err?.message || 'HTTP 429', now());
           logger.warn(`[Gemini] 429 on ${model}; marked exhausted until ${new Date(resetAt).toISOString()}. Switching model.`);
           lastStatus = 429;
           break; // Never retry the same model on 429
@@ -276,15 +316,29 @@ export async function callWithModelFallback(
         if (status === 503) {
           lastStatus = 503;
           if (attempt < RETRY_DELAYS_MS.length) {
-            logger.warn(`[Gemini] 503 on ${model}, retrying in ${RETRY_DELAYS_MS[attempt]}ms (retry ${attempt + 1}/${RETRY_DELAYS_MS.length})`);
-            await sleep(RETRY_DELAYS_MS[attempt]);
+            const delay = RETRY_DELAYS_MS[attempt];
+            if (deadlineMs !== null && now() + delay >= deadlineMs) {
+              logger.warn(`[Gemini] 503 on ${model}; deadline too close to retry, trying next model.`);
+              break;
+            }
+            logger.warn(`[Gemini] 503 on ${model}, retrying in ${delay}ms (retry ${attempt + 1}/${RETRY_DELAYS_MS.length})`);
+            await sleep(delay);
             continue;
           }
-          logger.warn(`[Gemini] 503 persisted on ${model} after retries; trying next model.`);
+          await modelStore.markCooling(model, cooldown503Sec, err?.message || 'HTTP 503', now());
+          logger.warn(`[Gemini] 503 persisted on ${model} after retries; cooling ${cooldown503Sec}s, trying next model.`);
+          break;
+        }
+
+        if (err?.isTimeout || status === 504) {
+          lastStatus = 504;
+          await modelStore.markCooling(model, cooldown503Sec, err?.message || 'Timeout', now());
+          logger.warn(`[Gemini] Timeout on ${model}; cooling ${cooldown503Sec}s, trying next model.`);
           break;
         }
 
         // Other non-retryable upstream error for this model
+        await modelStore.markUnavailable(model, cooldownErrorSec, err?.message || 'Upstream error', now());
         logger.warn(`[Gemini] Error on ${model}: ${String(err?.message || err).slice(0, 160)}`);
         lastStatus = 502;
         break;
@@ -292,11 +346,14 @@ export async function callWithModelFallback(
     }
   }
 
-  if (lastStatus === 429 || quota.areAllExhausted(models, now())) {
+  if (lastStatus === 429 || (await modelStore.areAllExhausted(models, now()))) {
     throw new ServiceError('RATE_LIMIT', 'The question service is busy, please try again soon', 429);
   }
   if (lastStatus === 503) {
     throw new ServiceError('UNAVAILABLE', 'The question service is temporarily unavailable, please try again.', 503);
+  }
+  if (lastStatus === 504) {
+    throw new ServiceError('TIMEOUT', 'Live generation timed out.', 504);
   }
   throw new ServiceError(
     'UPSTREAM_ERROR',
@@ -305,34 +362,7 @@ export async function callWithModelFallback(
   );
 }
 
-/**
- * Legacy single-model retry helper kept for generateTurn unit tests with injected single callModel.
- */
-async function callWithRetry(callModel, prompt, { sleep, logger }) {
-  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
-    try {
-      return await callModel(prompt);
-    } catch (err) {
-      if (err instanceof ServiceError) throw err;
-      const status = getHttpStatus(err);
-      if (status === 429) {
-        throw new ServiceError('RATE_LIMIT', 'The question service is busy, please try again soon.', 429);
-      }
-      if (status === 503) {
-        if (attempt < RETRY_DELAYS_MS.length) {
-          logger.warn(`[Gemini] 503, retrying in ${RETRY_DELAYS_MS[attempt]}ms (retry ${attempt + 1}/${RETRY_DELAYS_MS.length})`);
-          await sleep(RETRY_DELAYS_MS[attempt]);
-          continue;
-        }
-        throw new ServiceError('UNAVAILABLE', 'The question service is temporarily unavailable, please try again.', 503);
-      }
-      throw new ServiceError('UPSTREAM_ERROR', `The question service failed: ${String(err?.message || err).slice(0, 200)}`, 502);
-    }
-  }
-  throw new ServiceError('UNAVAILABLE', 'The question service is temporarily unavailable, please try again.', 503);
-}
-
-function buildBatchPrompt({ topic, difficulty, batchSize, avoidContexts = [], avoidQuestions = [] }) {
+export function buildBatchPrompt({ topic, difficulty, batchSize, avoidContexts = [], avoidQuestions = [] }) {
   const level = difficulty === 'Hard' ? 'Hard' : 'Easy';
   const focus = TOPIC_FOCUS[topic.number][level];
 
@@ -363,42 +393,45 @@ function buildBatchPrompt({ topic, difficulty, batchSize, avoidContexts = [], av
   return lines.join('\n');
 }
 
+export function parseJson(text) {
+  const clean = String(text || '')
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  return JSON.parse(clean);
+}
+
 /**
  * Generate a batch of verified lesson + question objects in ONE Gemini request.
- * Verifies each item independently and keeps only those that pass.
+ * Verifies each item independently with exact fractions and keeps only those that pass.
  * Retries the whole batch at most once if zero items pass or JSON is invalid.
  */
 export async function generateBatch(
   {
     topic,
     difficulty = 'Easy',
-    batchSize = BATCH_SIZE,
+    batchSize = DEFAULT_BATCH_SIZE,
     avoidContexts = [],
     avoidQuestions = []
   },
-  {
-    callModel = callGeminiModel,
-    sleep = defaultSleep,
-    logger = console,
-    models = getConfiguredModels(),
-    quota = modelQuota,
-    queue = geminiQueue,
-    now = () => Date.now()
-  } = {}
+  deps = {}
 ) {
+  const {
+    logger = console,
+    now = () => Date.now(),
+    deadlineMs = null
+  } = deps;
+
   const prompt = buildBatchPrompt({ topic, difficulty, batchSize, avoidContexts, avoidQuestions });
   const isAppTopic = topic.number === 9 || topic.number === 10;
 
   for (let batchAttempt = 0; batchAttempt <= MAX_BATCH_RETRIES; batchAttempt++) {
-    const text = await callWithModelFallback(prompt, {
-      callModel,
-      sleep,
-      logger,
-      models,
-      quota,
-      queue,
-      now
-    });
+    if (deadlineMs !== null && now() >= deadlineMs) {
+      throw new ServiceError('TIMEOUT', 'Live generation deadline exceeded.', 504);
+    }
+
+    const text = await callWithModelFallback(prompt, deps);
 
     let parsed;
     try {
@@ -420,14 +453,15 @@ export async function generateBatch(
         logger.warn(`[Batch topic ${topic.number} item ${idx + 1}] rejected: ${verdict.reason}`);
         continue;
       }
-      const sig = computeSignature(item.question);
+      const sig = await computeSignature(item.question);
       if (batchSigs.has(sig)) {
         logger.warn(`[Batch topic ${topic.number} item ${idx + 1}] rejected: duplicate within batch`);
         continue;
       }
-      const ctx = isAppTopic && typeof item.context === 'string' && item.context.trim()
-        ? item.context.trim().slice(0, 100)
-        : null;
+      const ctx =
+        isAppTopic && typeof item.context === 'string' && item.context.trim()
+          ? item.context.trim().slice(0, 100)
+          : null;
       if (ctx && batchContexts.has(ctx.toLowerCase())) {
         logger.warn(`[Batch topic ${topic.number} item ${idx + 1}] rejected: duplicate context "${ctx}" within batch`);
         continue;
@@ -456,88 +490,4 @@ export async function generateBatch(
     'Could not prepare a checked lesson right now, please try again.',
     502
   );
-}
-
-function parseJson(text) {
-  const clean = String(text || '')
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
-  return JSON.parse(clean);
-}
-
-/** Shape sent to the browser: canonical topic, lesson, shuffled question. */
-function finalizeTurn(turn, assignment) {
-  return {
-    topic: assignment.topic.label,
-    topicNumber: assignment.topic.number,
-    lesson: turn.lesson,
-    question: shuffleOptions(turn.question)
-  };
-}
-
-/**
- * Generate ONE verified lesson + question for a turn.
- * Never returns anything that failed verification.
- *
- * @param {{ assignment: object, difficulty: 'Easy'|'Hard', avoidQuestions?: string[], isDuplicate?: Function }} params
- * @param {{ callModel?: Function, sleep?: Function, logger?: Console, useStaticFallback?: boolean }} [deps] injectable for tests
- */
-export async function generateTurn(
-  { assignment, difficulty = 'Easy', avoidQuestions = [], isDuplicate = null },
-  { callModel = null, sleep = defaultSleep, logger = console, useStaticFallback = USE_STATIC_FALLBACK } = {}
-) {
-  const prompt = buildUserPrompt({ assignment, difficulty, avoidQuestions });
-  const invoke = callModel
-    ? () => callWithRetry(callModel, prompt, { sleep, logger })
-    : () => callWithModelFallback(prompt, { sleep, logger });
-
-  try {
-    let lastReason = 'unknown';
-    for (let attempt = 0; attempt <= MAX_VERIFY_RETRIES; attempt++) {
-      const text = await invoke();
-
-      let turn;
-      try {
-        turn = parseJson(text);
-      } catch (err) {
-        lastReason = `Invalid JSON: ${err.message}`;
-        logger.warn(`[Turn ${assignment.turn}] attempt ${attempt + 1} rejected: ${lastReason}`);
-        continue;
-      }
-
-      const verdict = verifyTurn(turn, assignment.topic);
-      if (!verdict.valid) {
-        lastReason = verdict.reason;
-        logger.warn(`[Turn ${assignment.turn}] attempt ${attempt + 1} rejected: ${lastReason}`);
-        continue;
-      }
-      if (isDuplicate && isDuplicate(turn.question)) {
-        lastReason = 'Duplicate of an earlier question in this game';
-        logger.warn(`[Turn ${assignment.turn}] attempt ${attempt + 1} rejected: ${lastReason}`);
-        continue;
-      }
-
-      return finalizeTurn(turn, assignment);
-    }
-
-    throw new ServiceError(
-      'VERIFY_FAILED',
-      'Could not prepare a checked lesson right now, please try again.',
-      502
-    );
-  } catch (err) {
-    if (useStaticFallback && !(err instanceof ServiceError && err.code === 'NOT_CONFIGURED')) {
-      logger.warn(`[Turn ${assignment.turn}] using static fallback because: ${err.message}`);
-      const fallback = pickStaticFallback(assignment.topic.number);
-      return {
-        topic: fallback.topic,
-        topicNumber: parseInt(fallback.topic, 10),
-        lesson: fallback.lesson,
-        question: shuffleOptions(fallback.question)
-      };
-    }
-    throw err;
-  }
 }

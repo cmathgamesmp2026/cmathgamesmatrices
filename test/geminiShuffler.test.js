@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { shuffleOptions } from '../server/services/gemini.js';
+import { shuffleOptions } from '../shared/gemini.js';
 
 describe('Gemini Option Shuffler', () => {
   it('preserves the correct answer reference while shuffling', () => {

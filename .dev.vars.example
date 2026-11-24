@@ -1,0 +1,5 @@
+# Local development secrets for Cloudflare Pages Functions (wrangler pages dev)
+# Copy this file to .dev.vars and fill in your real Gemini API key.
+# NEVER commit .dev.vars and NEVER prefix secrets with VITE_.
+
+GEMINI_API_KEY=your_gemini_api_key_here

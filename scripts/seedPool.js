@@ -1,59 +1,57 @@
 /**
  * Pool Seeding Script (`npm run seed-pool`)
- * Generates verified batches for every topic (1..10) and difficulty (easy, hard)
- * until each bucket has POOL_TARGET_PER_TOPIC (default 10) items.
- * Respects the Gemini request queue and model fallback; stops cleanly when all
- * models are exhausted and can be re-run on later days to continue.
+ * Runs locally in Node.js (NOT on Cloudflare).
+ * Reads Gemini key, pool settings, and Cloudflare D1 API credentials from `.env`.
+ * Reuses /shared modules for Gemini calls, model fallback, exact-fraction verification,
+ * SHA-256 signatures, and D1 parameterized queries.
+ * Stops cleanly when all configured models hit quota and can be re-run to continue.
  */
 
-import path from 'path';
-import { fileURLToPath } from 'url';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
-dotenv.config();
-
 import {
-  BATCH_SIZE,
-  generateBatch,
+  DEFAULT_BATCH_SIZE,
+  DEFAULT_GEMINI_MIN_GAP_MS,
+  DEFAULT_POOL_TARGET_PER_TOPIC,
   getConfiguredModels,
-  modelQuota,
-  ServiceError
-} from '../services/gemini.js';
-import { TOPICS, APPLICATION_TOPIC_NUMBERS } from '../services/gameSession.js';
-import {
-  checkPoolTableExists,
-  getPoolCounts,
-  getPoolContexts,
-  saveToPool
-} from '../services/questionPool.js';
-
-export const POOL_TARGET_PER_TOPIC = Math.max(
-  1,
-  parseInt(process.env.POOL_TARGET_PER_TOPIC || '10', 10)
-);
+  getIntSetting
+} from '../shared/config.js';
+import { TOPICS, APPLICATION_TOPIC_NUMBERS } from '../shared/topics.js';
+import { InMemoryModelStateStore } from '../shared/modelState.js';
+import { generateBatch, ServiceError } from '../shared/gemini.js';
+import { getPoolCounts, getPoolContexts, saveToPool } from '../shared/d1Pool.js';
+import { createD1HttpClient } from './d1HttpClient.js';
 
 const DIFFICULTIES = [
   { label: 'Easy', key: 'easy' },
   { label: 'Hard', key: 'hard' }
 ];
 
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
- * Seed the question pool up to targetPerTopic for every (topic, difficulty).
+ * Seed the remote D1 question_pool up to targetPerTopic for every (topic, difficulty).
  * Injectable dependencies for unit testing.
  */
 export async function runSeedPool({
-  targetPerTopic = POOL_TARGET_PER_TOPIC,
-  batchSize = BATCH_SIZE,
-  models = getConfiguredModels(),
-  quota = modelQuota,
-  getCounts = getPoolCounts,
-  getContexts = getPoolContexts,
-  generateBatchFn = generateBatch,
-  saveFn = saveToPool,
+  env = {},
+  targetPerTopic = getIntSetting(env, 'POOL_TARGET_PER_TOPIC', DEFAULT_POOL_TARGET_PER_TOPIC, 1),
+  batchSize = getIntSetting(env, 'BATCH_SIZE', DEFAULT_BATCH_SIZE, 1),
+  minGapMs = getIntSetting(env, 'GEMINI_MIN_GAP_MS', DEFAULT_GEMINI_MIN_GAP_MS, 0),
+  models = getConfiguredModels(env),
+  modelStore = new InMemoryModelStateStore(),
+  getCounts,
+  getContexts,
+  generateBatchFn,
+  saveFn,
+  sleep = defaultSleep,
   logger = console
 } = {}) {
   const counts = await getCounts();
   let totalAdded = 0;
   let stoppedEarly = false;
+  let lastCallAt = 0;
 
   outer: for (const topic of TOPICS) {
     for (const diff of DIFFICULTIES) {
@@ -61,7 +59,7 @@ export async function runSeedPool({
       let stalledAttempts = 0;
 
       while (current < targetPerTopic) {
-        if (quota.areAllExhausted(models)) {
+        if (await modelStore.areAllExhausted(models)) {
           stoppedEarly = true;
           break outer;
         }
@@ -70,6 +68,14 @@ export async function runSeedPool({
         const avoidContexts = APPLICATION_TOPIC_NUMBERS.includes(topic.number)
           ? await getContexts(topic.number, diff.label)
           : [];
+
+        if (lastCallAt > 0 && minGapMs > 0) {
+          const elapsed = Date.now() - lastCallAt;
+          if (elapsed < minGapMs) {
+            await sleep(minGapMs - elapsed);
+          }
+        }
+        lastCallAt = Date.now();
 
         logger.log(
           `[Seed] Topic ${topic.number} (${diff.key}): ${current}/${targetPerTopic} — generating batch of ${needed}...`
@@ -120,7 +126,7 @@ export async function runSeedPool({
           }
         } catch (err) {
           if (
-            quota.areAllExhausted(models) ||
+            (await modelStore.areAllExhausted(models)) ||
             (err instanceof ServiceError && err.status === 429)
           ) {
             logger.warn(`[Seed] Stopping cleanly: all models exhausted (${err.message}).`);
@@ -128,7 +134,7 @@ export async function runSeedPool({
             break outer;
           }
           logger.warn(`[Seed] Topic ${topic.number} (${diff.key}) batch failed: ${err.message}`);
-          break; // Move on to next bucket rather than spinning forever
+          break;
         }
       }
     }
@@ -147,7 +153,7 @@ export async function runSeedPool({
     }
   }
 
-  const quotaStatus = quota.getStatus(models);
+  const quotaStatus = await modelStore.getStatus(models);
   return {
     totalAdded,
     totalMissing,
@@ -158,16 +164,37 @@ export async function runSeedPool({
 }
 
 async function main() {
-  console.log('--- Seeding cmathgames.question_pool ---');
-  console.log(`Target per topic & difficulty: ${POOL_TARGET_PER_TOPIC} (batch size: ${BATCH_SIZE})`);
-  console.log(`Configured models: ${getConfiguredModels().join(', ')}`);
+  dotenv.config({ path: '.env' });
+  const env = { ...process.env };
 
-  const exists = await checkPoolTableExists();
-  if (!exists) {
-    process.exit(1);
-  }
+  const targetPerTopic = getIntSetting(env, 'POOL_TARGET_PER_TOPIC', DEFAULT_POOL_TARGET_PER_TOPIC, 1);
+  const batchSize = getIntSetting(env, 'BATCH_SIZE', DEFAULT_BATCH_SIZE, 1);
+  const models = getConfiguredModels(env);
 
-  const summary = await runSeedPool();
+  console.log('--- Seeding Cloudflare D1 question_pool ---');
+  console.log(`Target per topic & difficulty: ${targetPerTopic} (batch size: ${batchSize})`);
+  console.log(`Configured models: ${models.join(', ')}`);
+
+  const db = createD1HttpClient({
+    accountId: env.CLOUDFLARE_ACCOUNT_ID,
+    databaseId: env.CLOUDFLARE_D1_DATABASE_ID,
+    apiToken: env.CLOUDFLARE_API_TOKEN
+  });
+
+  const modelStore = new InMemoryModelStateStore();
+
+  const summary = await runSeedPool({
+    env,
+    targetPerTopic,
+    batchSize,
+    models,
+    modelStore,
+    getCounts: () => getPoolCounts(db),
+    getContexts: (topicNum, diffLabel) => getPoolContexts(db, topicNum, diffLabel),
+    generateBatchFn: (params) => generateBatch(params, { env, models, modelStore }),
+    saveFn: (row) => saveToPool(db, row)
+  });
+
   console.log('\n--- Seed Summary ---');
   console.log(`Added this run: ${summary.totalAdded}`);
   console.log(`Still missing:  ${summary.totalMissing}`);

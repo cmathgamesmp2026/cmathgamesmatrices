@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { verifyTurn, verifyQuestion, isOutOfSyllabus } from '../server/services/mathVerify.js';
-import { STATIC_LESSONS } from '../server/services/staticFallback.js';
-import { TOPICS } from '../server/services/gameSession.js';
+import { verifyTurn, verifyQuestion, isOutOfSyllabus } from '../shared/mathVerify.js';
+import { STATIC_LESSONS } from '../shared/staticFallback.js';
+import { TOPICS } from '../shared/topics.js';
 
 const topicFor = (number) => TOPICS[number - 1];
 const clone = (x) => JSON.parse(JSON.stringify(x));
