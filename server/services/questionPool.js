@@ -183,3 +183,22 @@ export async function getPoolContexts(topic, difficulty, dbPool = getPool()) {
   );
   return rows.map((r) => r.context).filter(Boolean);
 }
+
+/** Return pool counts per topic (1..10) and difficulty ('easy', 'hard'). */
+export async function getPoolCounts(dbPool = getPool()) {
+  const counts = {};
+  for (let t = 1; t <= 10; t++) {
+    counts[t] = { easy: 0, hard: 0 };
+  }
+  const [rows] = await dbPool.execute(
+    'SELECT topic, difficulty, COUNT(*) AS cnt FROM cmathgames.question_pool GROUP BY topic, difficulty'
+  );
+  for (const row of rows) {
+    const t = Number(row.topic);
+    const d = normalizeDifficulty(row.difficulty);
+    if (counts[t]) {
+      counts[t][d] = Number(row.cnt) || 0;
+    }
+  }
+  return counts;
+}

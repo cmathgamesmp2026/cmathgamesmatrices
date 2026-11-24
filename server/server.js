@@ -10,8 +10,17 @@ dotenv.config();
 
 import questionRoutes from './routes/questions.js';
 import leaderboardRoutes from './routes/leaderboard.js';
-import { DEFAULT_GEMINI_MODEL, SUPPORTED_GEMINI_MODELS } from './services/gemini.js';
-import { checkPoolTableExists } from './services/questionPool.js';
+import {
+  DEFAULT_GEMINI_MODEL,
+  SUPPORTED_GEMINI_MODELS,
+  getConfiguredModels,
+  modelQuota
+} from './services/gemini.js';
+import {
+  checkPoolTableExists,
+  isPoolAvailable,
+  getPoolCounts
+} from './services/questionPool.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,8 +41,33 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your_gemini_api_key_here'),
     model: process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
+    models: getConfiguredModels(),
     supportedModels: SUPPORTED_GEMINI_MODELS,
     dbHost: process.env.DB_HOST || 'localhost'
+  });
+});
+
+// Pool & model quota status endpoint
+app.get('/api/pool-status', async (req, res) => {
+  const models = getConfiguredModels();
+  const quotaStatus = modelQuota.getStatus(models);
+  let counts = null;
+
+  if (isPoolAvailable()) {
+    try {
+      counts = await getPoolCounts();
+    } catch (err) {
+      console.warn('[API /pool-status] DB error:', err.message);
+    }
+  }
+
+  res.json({
+    success: true,
+    poolAvailable: isPoolAvailable(),
+    counts,
+    models: quotaStatus.models,
+    exhaustedModels: quotaStatus.exhausted,
+    allModelsExhausted: quotaStatus.allExhausted
   });
 });
 

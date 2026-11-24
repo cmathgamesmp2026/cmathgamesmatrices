@@ -8,6 +8,7 @@
     "build": "vite build",
     "start": "node server/server.js",
     "init-db": "node server/scripts/initDb.js",
+    "seed-pool": "node server/scripts/seedPool.js",
     "test": "node --test test/**/*.test.js"
   },
   "dependencies": {
