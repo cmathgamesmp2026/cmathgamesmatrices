@@ -1,5 +1,11 @@
 import express from 'express';
-import { generateTurn, shuffleOptions, ServiceError } from '../services/gemini.js';
+import {
+  generateBatch,
+  shuffleOptions,
+  ServiceError,
+  modelQuota,
+  getConfiguredModels
+} from '../services/gemini.js';
 import {
   startNewGame,
   getSession,
@@ -16,7 +22,8 @@ import {
   computeSignature,
   saveToPool,
   findUnseenForTopic,
-  incrementTimesServed
+  incrementTimesServed,
+  getPoolContexts
 } from '../services/questionPool.js';
 
 const router = express.Router();
@@ -25,31 +32,57 @@ const router = express.Router();
 const activeRefills = new Set();
 
 /**
- * Trigger a non-blocking background generation to top up the pool for (topic, difficulty).
+ * Collect contexts already in the pool plus those used in this game (for topics 9 & 10).
  */
-function triggerBackgroundRefill({ assignment, difficulty, avoidQuestions }) {
-  const key = `${assignment.topic.number}:${difficulty.toLowerCase()}`;
+async function collectAvoidContexts(topicNumber, difficulty, session) {
+  if (!APPLICATION_TOPIC_NUMBERS.includes(topicNumber)) return [];
+  const combined = new Set([...session.usedContexts]);
+  if (isPoolAvailable()) {
+    try {
+      const pooled = await getPoolContexts(topicNumber, difficulty);
+      pooled.forEach((c) => combined.add(c));
+    } catch {
+      // ignore read errors when gathering hint contexts
+    }
+  }
+  return [...combined];
+}
+
+/**
+ * Trigger a non-blocking background batch generation to top up the pool for (topic, difficulty).
+ * Skips quietly if all models are exhausted.
+ */
+function triggerBackgroundRefill({ topic, difficulty, session }) {
+  if (modelQuota.areAllExhausted(getConfiguredModels())) return;
+
+  const key = `${topic.number}:${difficulty.toLowerCase()}`;
   if (activeRefills.has(key)) return;
   activeRefills.add(key);
 
   (async () => {
     try {
-      const content = await generateTurn({
-        assignment,
+      const avoidContexts = await collectAvoidContexts(topic.number, difficulty, session);
+      const items = await generateBatch({
+        topic,
         difficulty,
-        avoidQuestions
+        avoidContexts,
+        avoidQuestions: session.recentQuestions
       });
       if (isPoolAvailable()) {
-        const context = APPLICATION_TOPIC_NUMBERS.includes(assignment.topic.number)
-          ? assignment.questionContext
-          : null;
-        await saveToPool({
-          topic: assignment.topic.number,
-          difficulty,
-          payload: content,
-          context,
-          initialTimesServed: 0
-        });
+        for (const item of items) {
+          await saveToPool({
+            topic: topic.number,
+            difficulty,
+            payload: {
+              topic: item.topic,
+              topicNumber: item.topicNumber,
+              lesson: item.lesson,
+              question: item.question
+            },
+            context: item.context || null,
+            initialTimesServed: 0
+          });
+        }
       }
     } catch (err) {
       console.warn(`[Background Refill ${key}] skipped: ${err.message}`);
@@ -76,9 +109,10 @@ router.post('/start', (req, res) => {
  *  1. Pick the turn's topic (shuffled order, no repeat until all 10 used).
  *  2. Look in the pool for that topic and difficulty, excluding everything seen in this game.
  *     Prefer lowest times_served, random among ties. Increment times_served.
- *  3. If fewer than POOL_MIN_PER_TOPIC unseen items remain, generate more in the background.
- *  4. If no unseen item exists for the topic, generate live and save to pool.
- *     If live generation fails, move to the next topic in the shuffled order with an unseen item.
+ *  3. If fewer than POOL_MIN_PER_TOPIC unseen items remain, generate a batch in the background.
+ *  4. If no unseen item exists for the topic, generate a batch live (unless all models are exhausted)
+ *     and save all verified items to the pool. If that fails, move to the next topic in the
+ *     shuffled order that still has an unseen item in the pool.
  *  5. If nothing unseen can be found or generated, return busy message with Retry. Never repeat.
  */
 router.post('/', async (req, res) => {
@@ -114,17 +148,16 @@ router.post('/', async (req, res) => {
           context: picked.context
         });
 
-        // Step 3: If fewer than POOL_MIN_PER_TOPIC unseen items remain after serving this one, refill in background
+        // Step 3: If fewer than POOL_MIN_PER_TOPIC unseen items remain, refill in background
         const remainingUnseen = unseenCount - 1;
         if (remainingUnseen < POOL_MIN_PER_TOPIC) {
           triggerBackgroundRefill({
-            assignment,
+            topic: assignment.topic,
             difficulty: normalizedDiff,
-            avoidQuestions: session.recentQuestions
+            session
           });
         }
 
-        // Re-shuffle options so correctIndex is randomized even on reused items
         const servedContent = {
           ...picked.payload,
           question: shuffleOptions(picked.payload.question)
@@ -136,82 +169,110 @@ router.post('/', async (req, res) => {
     }
   }
 
-  // Step 4a: No unseen pool item for this topic -> generate live
-  try {
-    const content = await generateTurn({
-      assignment,
-      difficulty: normalizedDiff,
-      avoidQuestions: session.recentQuestions,
-      isDuplicate: (question) =>
-        isDuplicateQuestion(session, question, { signature: computeSignature(question) })
-    });
+  // Step 4a: No unseen pool item for this topic -> live batch generation (if any model has quota)
+  let liveErr = null;
+  if (!modelQuota.areAllExhausted(getConfiguredModels())) {
+    try {
+      const avoidContexts = await collectAvoidContexts(assignment.topic.number, normalizedDiff, session);
+      const items = await generateBatch({
+        topic: assignment.topic,
+        difficulty: normalizedDiff,
+        avoidContexts,
+        avoidQuestions: session.recentQuestions
+      });
 
-    const signature = computeSignature(content.question);
-    const context = APPLICATION_TOPIC_NUMBERS.includes(assignment.topic.number)
-      ? assignment.questionContext
-      : null;
+      let chosenContent = null;
+      let chosenMeta = null;
 
-    let savedId = null;
-    if (isPoolAvailable()) {
-      try {
-        const saved = await saveToPool({
-          topic: assignment.topic.number,
-          difficulty: normalizedDiff,
-          payload: content,
-          context,
-          initialTimesServed: 1
-        });
-        savedId = saved.id;
-      } catch (saveErr) {
-        console.warn('[QuestionPool Save Error]:', saveErr.message);
-      }
-    }
+      for (const item of items) {
+        const payload = {
+          topic: item.topic,
+          topicNumber: item.topicNumber,
+          lesson: item.lesson,
+          question: item.question
+        };
+        const signature = computeSignature(item.question);
+        const context = APPLICATION_TOPIC_NUMBERS.includes(assignment.topic.number)
+          ? item.context || assignment.questionContext || null
+          : null;
 
-    recordQuestion(session, content.question, { id: savedId, signature, context });
-    return res.json({ success: true, content, source: 'live' });
-  } catch (liveErr) {
-    console.warn(`[API /question] Live generation failed for topic ${assignment.topic.number}: ${liveErr.message}`);
+        const isUnseen = !isDuplicateQuestion(session, item.question, { signature, context });
+        const willServeNow = !chosenContent && isUnseen;
 
-    // Step 4b: Live failed -> try the next topic in the shuffled order that still has an unseen item
-    if (isPoolAvailable()) {
-      const fallbackTopics = getFallbackTopics(session, assignment.topic.number);
-      for (const fallbackTopic of fallbackTopics) {
-        try {
-          const { picked } = await findUnseenForTopic({
-            topic: fallbackTopic.number,
-            difficulty: normalizedDiff,
-            servedIds: session.servedIds,
-            servedSignatures: session.servedSignatures,
-            usedContexts: session.usedContexts
-          });
-          if (picked && picked.payload) {
-            await incrementTimesServed(picked.id);
-            assignment.topic = fallbackTopic;
-            recordQuestion(session, picked.payload.question, {
-              id: picked.id,
-              signature: picked.signature,
-              context: picked.context
+        let savedId = null;
+        if (isPoolAvailable()) {
+          try {
+            const saved = await saveToPool({
+              topic: assignment.topic.number,
+              difficulty: normalizedDiff,
+              payload,
+              context,
+              initialTimesServed: willServeNow ? 1 : 0
             });
-            const servedContent = {
-              ...picked.payload,
-              question: shuffleOptions(picked.payload.question)
-            };
-            return res.json({ success: true, content: servedContent, source: 'pool-fallback' });
+            savedId = saved.id;
+          } catch (saveErr) {
+            console.warn('[QuestionPool Save Error]:', saveErr.message);
           }
-        } catch (fbErr) {
-          console.warn(`[QuestionPool Fallback Error topic ${fallbackTopic.number}]:`, fbErr.message);
+        }
+
+        if (willServeNow) {
+          chosenContent = payload;
+          chosenMeta = { id: savedId, signature, context };
         }
       }
-    }
 
-    // Step 5: Nothing unseen can be found or generated -> return busy message, never repeat
-    const status = liveErr instanceof ServiceError ? liveErr.status : 503;
-    return res.status(status).json({
-      success: false,
-      code: liveErr instanceof ServiceError ? liveErr.code : 'BUSY',
-      error: 'The question service is busy, please try again soon'
-    });
+      if (chosenContent) {
+        recordQuestion(session, chosenContent.question, chosenMeta);
+        return res.json({ success: true, content: chosenContent, source: 'live-batch' });
+      }
+      liveErr = new ServiceError('VERIFY_FAILED', 'All generated items were duplicates.', 502);
+    } catch (err) {
+      liveErr = err;
+      console.warn(`[API /question] Live batch generation failed for topic ${assignment.topic.number}: ${err.message}`);
+    }
+  } else {
+    liveErr = new ServiceError('RATE_LIMIT', 'The question service is busy, please try again soon', 429);
   }
+
+  // Step 4b: Live failed or all models exhausted -> try next topic in shuffled order with an unseen item
+  if (isPoolAvailable()) {
+    const fallbackTopics = getFallbackTopics(session, assignment.topic.number);
+    for (const fallbackTopic of fallbackTopics) {
+      try {
+        const { picked } = await findUnseenForTopic({
+          topic: fallbackTopic.number,
+          difficulty: normalizedDiff,
+          servedIds: session.servedIds,
+          servedSignatures: session.servedSignatures,
+          usedContexts: session.usedContexts
+        });
+        if (picked && picked.payload) {
+          await incrementTimesServed(picked.id);
+          assignment.topic = fallbackTopic;
+          recordQuestion(session, picked.payload.question, {
+            id: picked.id,
+            signature: picked.signature,
+            context: picked.context
+          });
+          const servedContent = {
+            ...picked.payload,
+            question: shuffleOptions(picked.payload.question)
+          };
+          return res.json({ success: true, content: servedContent, source: 'pool-fallback' });
+        }
+      } catch (fbErr) {
+        console.warn(`[QuestionPool Fallback Error topic ${fallbackTopic.number}]:`, fbErr.message);
+      }
+    }
+  }
+
+  // Step 5: Nothing unseen can be found or generated -> return busy message, never repeat
+  const status = liveErr instanceof ServiceError ? liveErr.status : 503;
+  return res.status(status).json({
+    success: false,
+    code: liveErr instanceof ServiceError ? liveErr.code : 'BUSY',
+    error: 'The question service is busy, please try again soon'
+  });
 });
 
 export default router;

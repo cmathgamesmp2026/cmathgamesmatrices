@@ -1,6 +1,15 @@
 import { GoogleGenAI } from '@google/genai';
 import { verifyTurn, compareValues } from './mathVerify.js';
 import { pickStaticFallback } from './staticFallback.js';
+import { computeSignature } from './questionPool.js';
+import {
+  DEFAULT_GEMINI_MODEL,
+  getConfiguredModels,
+  modelQuota,
+  geminiQueue
+} from './geminiQueue.js';
+
+export { DEFAULT_GEMINI_MODEL, getConfiguredModels, modelQuota, geminiQueue };
 
 export const SUPPORTED_GEMINI_MODELS = [
   'gemini-3.5-flash',
@@ -12,7 +21,8 @@ export const SUPPORTED_GEMINI_MODELS = [
   'gemini-4-argon'
 ];
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash';
+export const BATCH_SIZE = Math.max(1, parseInt(process.env.BATCH_SIZE || '4', 10));
+export const MAX_BATCH_RETRIES = 1;
 
 /** Emergency switch: if true, a few hardcoded verified lessons are used when generation fails. */
 export const USE_STATIC_FALLBACK = false;
@@ -197,13 +207,13 @@ export function getHttpStatus(err) {
   return null;
 }
 
-/** The real Gemini call: JSON mode, returns the raw response text. */
-async function callGemini(prompt) {
+/** The real Gemini call for a specific model: JSON mode, returns raw response text. */
+async function callGeminiModel(prompt, modelName) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey.trim() === '' || apiKey === 'your_gemini_api_key_here') {
     throw new ServiceError('NOT_CONFIGURED', 'GEMINI_API_KEY is not configured in .env.', 500);
   }
-  const model = (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim();
+  const model = (modelName || getConfiguredModels()[0]).trim();
   const ai = new GoogleGenAI({ apiKey });
   const response = await ai.models.generateContent({
     model,
@@ -220,9 +230,83 @@ async function callGemini(prompt) {
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * One Gemini call with the error policy:
- *  - 429 (quota): never retried.
- *  - 503: retried up to 2 times with a growing delay (about 1s then 3s).
+ * Call Gemini through the serial request queue with model fallback:
+ *  - 429: mark model exhausted until next midnight Pacific time, do NOT retry it, move to next model.
+ *  - 503: retry up to 2 times with growing delay (1s then 3s), then move to next model.
+ *  - If all models are exhausted, stop calling Gemini immediately.
+ */
+export async function callWithModelFallback(
+  prompt,
+  {
+    callModel = callGeminiModel,
+    sleep = defaultSleep,
+    logger = console,
+    models = getConfiguredModels(),
+    quota = modelQuota,
+    queue = geminiQueue,
+    now = () => Date.now()
+  } = {}
+) {
+  const available = quota.getAvailableModels(models, now());
+  if (available.length === 0) {
+    throw new ServiceError('RATE_LIMIT', 'The question service is busy, please try again soon', 429);
+  }
+
+  let lastStatus = 503;
+  let lastError = null;
+
+  for (const model of available) {
+    if (quota.isExhausted(model, now())) continue;
+
+    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        return await queue.enqueue(() => callModel(prompt, model));
+      } catch (err) {
+        if (err instanceof ServiceError) throw err;
+        const status = getHttpStatus(err);
+        lastError = err;
+
+        if (status === 429) {
+          const resetAt = quota.markExhausted(model, now());
+          logger.warn(`[Gemini] 429 on ${model}; marked exhausted until ${new Date(resetAt).toISOString()}. Switching model.`);
+          lastStatus = 429;
+          break; // Never retry the same model on 429
+        }
+
+        if (status === 503) {
+          lastStatus = 503;
+          if (attempt < RETRY_DELAYS_MS.length) {
+            logger.warn(`[Gemini] 503 on ${model}, retrying in ${RETRY_DELAYS_MS[attempt]}ms (retry ${attempt + 1}/${RETRY_DELAYS_MS.length})`);
+            await sleep(RETRY_DELAYS_MS[attempt]);
+            continue;
+          }
+          logger.warn(`[Gemini] 503 persisted on ${model} after retries; trying next model.`);
+          break;
+        }
+
+        // Other non-retryable upstream error for this model
+        logger.warn(`[Gemini] Error on ${model}: ${String(err?.message || err).slice(0, 160)}`);
+        lastStatus = 502;
+        break;
+      }
+    }
+  }
+
+  if (lastStatus === 429 || quota.areAllExhausted(models, now())) {
+    throw new ServiceError('RATE_LIMIT', 'The question service is busy, please try again soon', 429);
+  }
+  if (lastStatus === 503) {
+    throw new ServiceError('UNAVAILABLE', 'The question service is temporarily unavailable, please try again.', 503);
+  }
+  throw new ServiceError(
+    'UPSTREAM_ERROR',
+    `The question service failed: ${String(lastError?.message || lastError).slice(0, 200)}`,
+    502
+  );
+}
+
+/**
+ * Legacy single-model retry helper kept for generateTurn unit tests with injected single callModel.
  */
 async function callWithRetry(callModel, prompt, { sleep, logger }) {
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
@@ -246,6 +330,132 @@ async function callWithRetry(callModel, prompt, { sleep, logger }) {
     }
   }
   throw new ServiceError('UNAVAILABLE', 'The question service is temporarily unavailable, please try again.', 503);
+}
+
+function buildBatchPrompt({ topic, difficulty, batchSize, avoidContexts = [], avoidQuestions = [] }) {
+  const level = difficulty === 'Hard' ? 'Hard' : 'Easy';
+  const focus = TOPIC_FOCUS[topic.number][level];
+
+  const lines = [
+    `Generate a JSON ARRAY of ${batchSize} distinct lesson + question objects for topic ${topic.label}.`,
+    `Difficulty: ${level.toUpperCase()}. Focus: ${focus}.`,
+    level === 'Easy'
+      ? 'Easy rules: topics 7 to 9 stay at 2×2 level; use small integers (about -5 to 9).'
+      : 'Hard rules: 3×3 and tougher multi-step questions are allowed; keep every entry a small integer.',
+    `Each of the ${batchSize} items MUST follow the exact single-item JSON contract (wrapped inside a top-level JSON array [ ... ]), and each item MUST use completely different matrices/numbers from the other items in the array.`
+  ];
+
+  if (topic.number === 9 || topic.number === 10) {
+    lines.push(
+      `For topics 9 and 10, give each of the ${batchSize} items a DIFFERENT real-world context (e.g. stationery and school supplies, canteen meals and drinks, movie or concert tickets, sports gear, phone or streaming plans, bus and train fares, gym or club memberships, online game items, art supplies, gardening supplies, recipes and ingredients, factory production).`,
+      'Do NOT use muffins or coffee. Include a short string field "context" on each item naming the test question real-world context (e.g. "movie or concert tickets").'
+    );
+    if (avoidContexts.length > 0) {
+      lines.push(`Avoid these already-used contexts: ${avoidContexts.join(', ')}.`);
+    }
+  }
+
+  if (avoidQuestions.length > 0) {
+    lines.push(`Do not repeat these earlier questions: ${avoidQuestions.map((q) => `"${q}"`).join('; ')}.`);
+  }
+
+  lines.push('Check all arithmetic carefully. Reply with ONLY a valid JSON array [ {...}, ... ].');
+  return lines.join('\n');
+}
+
+/**
+ * Generate a batch of verified lesson + question objects in ONE Gemini request.
+ * Verifies each item independently and keeps only those that pass.
+ * Retries the whole batch at most once if zero items pass or JSON is invalid.
+ */
+export async function generateBatch(
+  {
+    topic,
+    difficulty = 'Easy',
+    batchSize = BATCH_SIZE,
+    avoidContexts = [],
+    avoidQuestions = []
+  },
+  {
+    callModel = callGeminiModel,
+    sleep = defaultSleep,
+    logger = console,
+    models = getConfiguredModels(),
+    quota = modelQuota,
+    queue = geminiQueue,
+    now = () => Date.now()
+  } = {}
+) {
+  const prompt = buildBatchPrompt({ topic, difficulty, batchSize, avoidContexts, avoidQuestions });
+  const isAppTopic = topic.number === 9 || topic.number === 10;
+
+  for (let batchAttempt = 0; batchAttempt <= MAX_BATCH_RETRIES; batchAttempt++) {
+    const text = await callWithModelFallback(prompt, {
+      callModel,
+      sleep,
+      logger,
+      models,
+      quota,
+      queue,
+      now
+    });
+
+    let parsed;
+    try {
+      parsed = parseJson(text);
+    } catch (err) {
+      logger.warn(`[Batch topic ${topic.number}] attempt ${batchAttempt + 1} invalid JSON: ${err.message}`);
+      continue;
+    }
+
+    const rawItems = Array.isArray(parsed) ? parsed : parsed && typeof parsed === 'object' ? [parsed] : [];
+    const verified = [];
+    const batchSigs = new Set();
+    const batchContexts = new Set();
+
+    for (let idx = 0; idx < rawItems.length; idx++) {
+      const item = rawItems[idx];
+      const verdict = verifyTurn(item, topic);
+      if (!verdict.valid) {
+        logger.warn(`[Batch topic ${topic.number} item ${idx + 1}] rejected: ${verdict.reason}`);
+        continue;
+      }
+      const sig = computeSignature(item.question);
+      if (batchSigs.has(sig)) {
+        logger.warn(`[Batch topic ${topic.number} item ${idx + 1}] rejected: duplicate within batch`);
+        continue;
+      }
+      const ctx = isAppTopic && typeof item.context === 'string' && item.context.trim()
+        ? item.context.trim().slice(0, 100)
+        : null;
+      if (ctx && batchContexts.has(ctx.toLowerCase())) {
+        logger.warn(`[Batch topic ${topic.number} item ${idx + 1}] rejected: duplicate context "${ctx}" within batch`);
+        continue;
+      }
+
+      batchSigs.add(sig);
+      if (ctx) batchContexts.add(ctx.toLowerCase());
+
+      verified.push({
+        topic: topic.label,
+        topicNumber: topic.number,
+        context: ctx,
+        lesson: item.lesson,
+        question: shuffleOptions(item.question)
+      });
+    }
+
+    if (verified.length > 0) {
+      return verified;
+    }
+    logger.warn(`[Batch topic ${topic.number}] attempt ${batchAttempt + 1} yielded 0 verified items.`);
+  }
+
+  throw new ServiceError(
+    'VERIFY_FAILED',
+    'Could not prepare a checked lesson right now, please try again.',
+    502
+  );
 }
 
 function parseJson(text) {
@@ -276,14 +486,17 @@ function finalizeTurn(turn, assignment) {
  */
 export async function generateTurn(
   { assignment, difficulty = 'Easy', avoidQuestions = [], isDuplicate = null },
-  { callModel = callGemini, sleep = defaultSleep, logger = console, useStaticFallback = USE_STATIC_FALLBACK } = {}
+  { callModel = null, sleep = defaultSleep, logger = console, useStaticFallback = USE_STATIC_FALLBACK } = {}
 ) {
   const prompt = buildUserPrompt({ assignment, difficulty, avoidQuestions });
+  const invoke = callModel
+    ? () => callWithRetry(callModel, prompt, { sleep, logger })
+    : () => callWithModelFallback(prompt, { sleep, logger });
 
   try {
     let lastReason = 'unknown';
     for (let attempt = 0; attempt <= MAX_VERIFY_RETRIES; attempt++) {
-      const text = await callWithRetry(callModel, prompt, { sleep, logger });
+      const text = await invoke();
 
       let turn;
       try {
