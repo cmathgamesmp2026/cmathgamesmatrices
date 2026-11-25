@@ -66,11 +66,18 @@
         <div class="rules-summary">
           <h3>🎮 Game Rules &amp; Dice Mechanics:</h3>
           <ul>
-            <li><strong>AI Questions:</strong> Every question is dynamically generated live with Gemini API.</li>
+            <li><strong>Each Turn:</strong> Read the short lesson, answer the question, then roll the dice.</li>
             <li><strong>Biased Dice:</strong> Correct answers give a <strong>70% chance</strong> for high rolls (4, 5, 6). Wrong answers give <strong>70% chance</strong> for low rolls (1, 2, 3).</li>
             <li><strong>Hard Mode:</strong> Rolls <strong>2 dice</strong> (move is sum of both).</li>
             <li><strong>Snakes &amp; Ladders:</strong> Ladders propel you up; snakes slide you down.</li>
             <li><strong>Bounce-Back Rule:</strong> You must land <em>exactly</em> on tile 100. Any overshoot bounces back!</li>
+            <li><strong>Power Cards:</strong> Answer correctly to earn a random card (you can hold up to 2 of each). Use one before you roll:
+              <ul>
+                <li><strong>Identity (I):</strong> Ignores the next snake you land on.</li>
+                <li><strong>Scalar (2):</strong> Doubles your next roll total.</li>
+                <li><strong>Inverse (A<sup>−1</sup>):</strong> Undoes your last turn and returns you to your previous tile.</li>
+              </ul>
+            </li>
           </ul>
         </div>
 
