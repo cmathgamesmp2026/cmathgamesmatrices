@@ -3,7 +3,7 @@ pages_build_output_dir = "dist"
 compatibility_date = "2025-10-01"
 
 [[d1_databases]]
-binding = "cmathgames_db"
+binding = "DB"
 database_name = "cmathgames-db"
 database_id = "0e1f4466-98c8-4984-a0d2-fa0a53f84241"
 
