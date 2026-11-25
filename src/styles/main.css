@@ -1495,3 +1495,10 @@ select:focus {
 .working-conclusion-prefix {
   color: #38bdf8;
 }
+
+a.btn {
+  display: block;
+  box-sizing: border-box;
+  text-align: center;
+  text-decoration: none;
+}
